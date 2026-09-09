@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { Cell } from "./Cell";
 
 const ROW_HEIGHT = 28;
 const OVERSCAN = 10;
@@ -103,6 +104,30 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range.start, range.count]);
 
+  function commitCell(rowIndex: number, colIndex: number, value: string) {
+    invoke("set_cell", { row: rowIndex, col: colIndex, value }).then(() => {
+      // Optimistic local update — get_rows already merges the overlay, but
+      // we don't want the cell to flash back to the stale raw value while
+      // waiting for a future refetch (this phase's Risk: overlay must be
+      // visible everywhere a cell is read, including right after editing).
+      setRowsByIndex((prev) => {
+        const row = prev.get(rowIndex);
+        if (!row) return prev;
+        const next = new Map(prev);
+        const updated = [...row];
+        updated[colIndex] = value;
+        next.set(rowIndex, updated);
+        return next;
+      });
+    });
+  }
+
+  function handleOverflow(rowIndex: number) {
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollTop = rowIndex * ROW_HEIGHT;
+  }
+
   const totalHeight = rowCount * ROW_HEIGHT;
 
   return (
@@ -128,8 +153,12 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
             >
               {row
                 ? row.map((cell, ci) => (
-                    <div key={ci} style={{ padding: "0 6px", whiteSpace: "nowrap" }}>
-                      {cell}
+                    <div key={ci} style={{ minWidth: 100 }}>
+                      <Cell
+                        value={cell}
+                        onCommit={(v) => commitCell(rowIndex, ci, v)}
+                        onOverflow={() => handleOverflow(rowIndex)}
+                      />
                     </div>
                   ))
                 : <div style={{ padding: "0 6px", opacity: 0.4 }}>…</div>}
