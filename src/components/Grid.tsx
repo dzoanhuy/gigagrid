@@ -129,7 +129,8 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     scrollToRow: (row: number) => {
       const el = containerRef.current;
       if (!el) return;
-      el.scrollTop = row * rowHeight;
+      const offset = freezeHeader ? Math.max(0, row - 1) : row;
+      el.scrollTop = offset * rowHeight;
     },
     scrollToCol: (col: number) => {
       const el = containerRef.current;
@@ -138,12 +139,21 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     },
   }));
 
-  const range = computeWindow(scrollTop, rowHeight, viewportHeight, rowCount, OVERSCAN);
+  // When freezeHeader is on, row 0 is permanently shown via the frozen bar and
+  // is excluded from the normal scrollable list entirely (not just hidden) —
+  // otherwise its vacated absolute-position slot stays empty and every row
+  // below it renders one rowHeight too low, showing as a gap under the frozen
+  // bar. scrollableRowCount/fetchStart below keep scrollTop, computeWindow's
+  // range, and each row's rendered `top` all agreeing on the same coordinate
+  // space (offset 0 = the first SCROLLABLE row, i.e. logical row 1 here).
+  const scrollableRowCount = freezeHeader ? Math.max(0, rowCount - 1) : rowCount;
+  const range = computeWindow(scrollTop, rowHeight, viewportHeight, scrollableRowCount, OVERSCAN);
 
   useEffect(() => {
     if (range.count === 0) return;
+    const fetchStart = freezeHeader ? range.start + 1 : range.start;
     let missing = false;
-    for (let r = range.start; r < range.start + range.count; r++) {
+    for (let r = fetchStart; r < fetchStart + range.count; r++) {
       if (!rowsByIndex.has(r)) {
         missing = true;
         break;
@@ -153,18 +163,18 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
 
     if (fetchTimer.current !== null) window.clearTimeout(fetchTimer.current);
     fetchTimer.current = window.setTimeout(() => {
-      invoke<string[][]>("get_rows", { start: range.start, count: range.count }).then(
+      invoke<string[][]>("get_rows", { start: fetchStart, count: range.count }).then(
         (rows) => {
           setRowsByIndex((prev) => {
             const next = prev.size > MAX_CACHE_ROWS ? new Map<number, string[]>() : new Map(prev);
-            rows.forEach((row, i) => next.set(range.start + i, row));
+            rows.forEach((row, i) => next.set(fetchStart + i, row));
             return next;
           });
         },
       );
     }, FETCH_DEBOUNCE_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.start, range.count]);
+  }, [range.start, range.count, freezeHeader]);
 
   useEffect(() => {
     if (!freezeHeader || rowCount === 0) return;
@@ -196,7 +206,8 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
   function handleOverflow(rowIndex: number) {
     const el = containerRef.current;
     if (!el) return;
-    el.scrollTop = rowIndex * rowHeight;
+    const offset = freezeHeader ? Math.max(0, rowIndex - 1) : rowIndex;
+    el.scrollTop = offset * rowHeight;
   }
 
   function selectionBounds() {
@@ -312,7 +323,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     }
   }
 
-  const totalHeight = rowCount * rowHeight;
+  const totalHeight = scrollableRowCount * rowHeight;
   const colCount = rowsByIndex.get(0)?.length ?? 0;
   const chromeOffset = showGridChrome ? HEADER_HEIGHT : 0;
   const chromeBorder = showGridChrome
@@ -409,15 +420,15 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       )}
       <div style={{ height: totalHeight, position: "relative" }}>
         {Array.from({ length: range.count }, (_, i) => {
-          const rowIndex = range.start + i;
-          if (freezeHeader && rowIndex === 0) return null;
+          const offset = range.start + i;
+          const rowIndex = freezeHeader ? offset + 1 : offset;
           const row = rowsByIndex.get(rowIndex);
           return (
             <div
               key={rowIndex}
               style={{
                 position: "absolute",
-                top: rowIndex * rowHeight,
+                top: offset * rowHeight,
                 height: rowHeight,
                 display: "flex",
                 width: "100%",
