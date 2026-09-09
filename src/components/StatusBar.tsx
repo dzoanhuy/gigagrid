@@ -15,10 +15,12 @@ export function StatusBar({ totalRows, stats }: StatusBarProps) {
       style={{
         display: "flex",
         gap: 16,
-        padding: "4px 8px",
+        padding: "2px 8px",
         borderTop: "1px solid var(--border)",
-        fontSize: "0.85em",
+        fontSize: 12,
+        lineHeight: "16px",
         opacity: 0.8,
+        flexShrink: 0,
       }}
     >
       <span>{totalRows.toLocaleString()} rows</span>

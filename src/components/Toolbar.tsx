@@ -14,20 +14,24 @@ export function Toolbar({ onNavigate }: ToolbarProps) {
   const [gotoCol, setGotoCol] = useState("");
   const debounceRef = useRef<number | null>(null);
 
+  function runSearch(q: string, fromRow: number) {
+    invoke<number | null>("search", {
+      query: q,
+      fromRow,
+      direction: "next",
+    }).then((row) => {
+      if (row !== null && row !== undefined) {
+        setCurrentRow(row);
+        onNavigate(row);
+      }
+    });
+  }
+
   useEffect(() => {
     if (!query) return;
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
-      invoke<number | null>("search", {
-        query,
-        fromRow: currentRow,
-        direction: "next",
-      }).then((row) => {
-        if (row !== null && row !== undefined) {
-          setCurrentRow(row);
-          onNavigate(row);
-        }
-      });
+      runSearch(query, currentRow);
     }, SEARCH_DEBOUNCE_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
@@ -46,6 +50,12 @@ export function Toolbar({ onNavigate }: ToolbarProps) {
         placeholder="Search…"
         value={query}
         onChange={(e) => setQuery(e.currentTarget.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && query) {
+            if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
+            runSearch(query, currentRow);
+          }
+        }}
       />
       <form onSubmit={submitGoto} style={{ display: "flex", gap: 4 }}>
         <input

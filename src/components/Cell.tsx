@@ -41,7 +41,12 @@ export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps
     if (!el) return;
     el.style.width = "auto";
     el.style.height = "auto";
-    const wantedWidth = Math.min(MAX_WIDTH, Math.max(100, el.scrollWidth));
+    const scrollEl = el.closest<HTMLElement>("[data-gigagrid-scroll]");
+    const availableToEdge = scrollEl
+      ? scrollEl.getBoundingClientRect().right - el.getBoundingClientRect().left - 4
+      : MAX_WIDTH;
+    const widthCap = Math.max(MAX_WIDTH, availableToEdge);
+    const wantedWidth = Math.min(widthCap, Math.max(100, el.scrollWidth));
     const wantedHeight = Math.min(MAX_HEIGHT, Math.max(28, el.scrollHeight));
     el.style.width = `${wantedWidth}px`;
     el.style.height = `${wantedHeight}px`;

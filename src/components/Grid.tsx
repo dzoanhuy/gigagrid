@@ -9,6 +9,9 @@ const FETCH_DEBOUNCE_MS = 50;
 const MAX_CACHE_ROWS = 20000;
 const GUTTER_WIDTH = 48;
 const HEADER_HEIGHT = ROW_HEIGHT;
+const MIN_ROW_HEIGHT = 18;
+const MIN_COL_WIDTH = 40;
+const DEFAULT_COL_WIDTH = 100;
 // Columns aren't fixed-width in this phase (cells auto-size to content), so
 // goto-column scroll is an estimate, not exact — good enough for "get roughly
 // there", refine later if a fixed column-width model is added.
@@ -67,7 +70,43 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
   const [selStart, setSelStart] = useState<CellPos | null>(null);
   const [selEnd, setSelEnd] = useState<CellPos | null>(null);
   const [editingRow, setEditingRow] = useState<number | null>(null);
+  const [rowHeight, setRowHeight] = useState(ROW_HEIGHT);
+  const [colWidths, setColWidths] = useState<Record<number, number>>({});
   const selectingRef = useRef(false);
+
+  function startColResize(e: React.MouseEvent, colIndex: number) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = colWidths[colIndex] ?? DEFAULT_COL_WIDTH;
+    function onMove(ev: MouseEvent) {
+      const next = Math.max(MIN_COL_WIDTH, startWidth + (ev.clientX - startX));
+      setColWidths((prev) => ({ ...prev, [colIndex]: next }));
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
+  function startRowResize(e: React.MouseEvent) {
+    e.preventDefault();
+    e.stopPropagation();
+    const startY = e.clientY;
+    const startHeight = rowHeight;
+    function onMove(ev: MouseEvent) {
+      const next = Math.max(MIN_ROW_HEIGHT, startHeight + (ev.clientY - startY));
+      setRowHeight(next);
+    }
+    function onUp() {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
 
   useEffect(() => {
     const onMouseUp = () => {
@@ -90,7 +129,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     scrollToRow: (row: number) => {
       const el = containerRef.current;
       if (!el) return;
-      el.scrollTop = row * ROW_HEIGHT;
+      el.scrollTop = row * rowHeight;
     },
     scrollToCol: (col: number) => {
       const el = containerRef.current;
@@ -99,7 +138,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     },
   }));
 
-  const range = computeWindow(scrollTop, ROW_HEIGHT, viewportHeight, rowCount, OVERSCAN);
+  const range = computeWindow(scrollTop, rowHeight, viewportHeight, rowCount, OVERSCAN);
 
   useEffect(() => {
     if (range.count === 0) return;
@@ -157,7 +196,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
   function handleOverflow(rowIndex: number) {
     const el = containerRef.current;
     if (!el) return;
-    el.scrollTop = rowIndex * ROW_HEIGHT;
+    el.scrollTop = rowIndex * rowHeight;
   }
 
   function selectionBounds() {
@@ -266,14 +305,16 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       e.preventDefault();
       await invoke("undo");
       invalidateCache();
+    } else if (e.key === "a") {
+      e.preventDefault();
+      setSelStart({ row: 0, col: 0 });
+      setSelEnd({ row: rowCount - 1, col: Math.max(0, colCount - 1) });
     }
   }
 
-  const totalHeight = rowCount * ROW_HEIGHT;
+  const totalHeight = rowCount * rowHeight;
   const colCount = rowsByIndex.get(0)?.length ?? 0;
   const chromeOffset = showGridChrome ? HEADER_HEIGHT : 0;
-  const freezeOffset = freezeHeader ? HEADER_HEIGHT : 0;
-  const topOffset = chromeOffset + freezeOffset;
   const chromeBorder = showGridChrome
     ? { borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)" }
     : {};
@@ -282,10 +323,11 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
   return (
     <div
       ref={containerRef}
+      data-gigagrid-scroll
       tabIndex={0}
       onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
       onKeyDown={handleKeyDown}
-      style={{ overflow: "auto", height: "100%", position: "relative", outline: "none" }}
+      style={{ overflow: "auto", height: "100%", position: "relative", outline: "none", userSelect: "none" }}
     >
       {showGridChrome && (
         <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: "var(--bg)" }}>
@@ -304,7 +346,8 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
             <div
               key={c}
               style={{
-                minWidth: 100,
+                position: "relative",
+                width: colWidths[c] ?? DEFAULT_COL_WIDTH,
                 height: HEADER_HEIGHT,
                 display: "flex",
                 alignItems: "center",
@@ -313,6 +356,10 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
               }}
             >
               {c + 1}
+              <div
+                onMouseDown={(e) => startColResize(e, c)}
+                style={{ position: "absolute", right: 0, top: 0, bottom: 0, width: 4, cursor: "col-resize" }}
+              />
             </div>
           ))}
         </div>
@@ -346,7 +393,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
             </div>
           )}
           {frozenRow.map((cell, ci) => (
-            <div key={ci} style={{ position: "relative", minWidth: 100, ...chromeBorder }}>
+            <div key={ci} style={{ position: "relative", width: colWidths[ci] ?? DEFAULT_COL_WIDTH, ...chromeBorder }}>
               <Cell
                 value={cell}
                 onCommit={(v) => commitCell(0, ci, v)}
@@ -357,7 +404,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
           ))}
         </div>
       )}
-      <div style={{ height: totalHeight, position: "relative", marginTop: topOffset }}>
+      <div style={{ height: totalHeight, position: "relative" }}>
         {Array.from({ length: range.count }, (_, i) => {
           const rowIndex = range.start + i;
           if (freezeHeader && rowIndex === 0) return null;
@@ -367,8 +414,8 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
               key={rowIndex}
               style={{
                 position: "absolute",
-                top: rowIndex * ROW_HEIGHT,
-                height: ROW_HEIGHT,
+                top: rowIndex * rowHeight,
+                height: rowHeight,
                 display: "flex",
                 width: "100%",
                 zIndex: editingRow === rowIndex ? 5 : undefined,
@@ -389,17 +436,25 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
                   }}
                 >
                   {rowIndex + 1}
+                  <div
+                    onMouseDown={startRowResize}
+                    style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 4, cursor: "row-resize" }}
+                  />
                 </div>
               )}
               {row
                 ? row.map((cell, ci) => (
                     <div
                       key={ci}
-                      onMouseDown={() => startSelect(rowIndex, ci)}
+                      onMouseDown={(e) =>
+                        e.shiftKey && selStart
+                          ? setSelEnd({ row: rowIndex, col: ci })
+                          : startSelect(rowIndex, ci)
+                      }
                       onMouseEnter={() => extendSelect(rowIndex, ci)}
                       style={{
                         position: "relative",
-                        minWidth: 100,
+                        width: colWidths[ci] ?? DEFAULT_COL_WIDTH,
                         background: isSelected(rowIndex, ci) ? "rgba(70,130,255,0.25)" : undefined,
                         ...chromeBorder,
                       }}
