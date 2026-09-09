@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+jobs:
+  release:
+    # Default fail-fast (true): if one OS leg fails, the run is marked
+    # failed. The real safety net is `releaseDraft: true` below — the
+    # GitHub Release is never published automatically, so a run that fails
+    # on one platform never exposes a public release with only the other
+    # platform's installer. A human reviews the draft, fixes, and re-tags
+    # (or manually publishes once both assets are present).
+    strategy:
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build and attach to release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Gigagrid ${{ github.ref_name }}"
+          releaseDraft: true
+          generateReleaseNotes: true
+          prerelease: false
