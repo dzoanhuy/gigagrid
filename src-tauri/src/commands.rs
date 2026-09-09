@@ -89,6 +89,33 @@ pub fn set_cell(
     Ok(())
 }
 
+/// Batched write for paste — ALL `edits` land in one undo-stack group (see
+/// overlay.rs), so a single Cmd/Ctrl+Z reverts the whole pasted range.
+#[tauri::command]
+pub fn set_cells_batch(
+    edits: Vec<(usize, usize, String)>,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    open_file.overlay.set_many(edits);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn undo(state: State<AppState>) -> Result<bool, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    Ok(open_file.overlay.undo())
+}
+
+#[tauri::command]
+pub fn redo(state: State<AppState>) -> Result<bool, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    Ok(open_file.overlay.redo())
+}
+
 #[tauri::command]
 pub fn search(
     query: String,

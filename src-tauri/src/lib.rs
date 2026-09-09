@@ -14,7 +14,10 @@ pub fn run() {
             commands::get_rows,
             commands::search,
             commands::goto,
-            commands::set_cell
+            commands::set_cell,
+            commands::set_cells_batch,
+            commands::undo,
+            commands::redo
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
