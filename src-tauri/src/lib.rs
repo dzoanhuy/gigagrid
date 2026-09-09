@@ -1,6 +1,7 @@
 mod commands;
 mod index;
 mod overlay;
+mod save;
 mod search;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -17,7 +18,11 @@ pub fn run() {
             commands::set_cell,
             commands::set_cells_batch,
             commands::undo,
-            commands::redo
+            commands::redo,
+            commands::set_sort,
+            commands::set_filter,
+            commands::clear_view,
+            commands::save_file
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

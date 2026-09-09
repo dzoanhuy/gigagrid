@@ -12,6 +12,8 @@ interface FileMeta {
 function App() {
   const [file, setFile] = useState<FileMeta | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
   const gridRef = useRef<GridHandle>(null);
 
   async function openFile() {
@@ -23,9 +25,23 @@ function App() {
     try {
       const meta = await invoke<FileMeta>("open_file", { path: selected });
       setError(null);
+      setSavedAt(null);
       setFile(meta);
     } catch (e) {
       setError(String(e));
+    }
+  }
+
+  async function saveFile() {
+    setSaving(true);
+    try {
+      await invoke("save_file", { dst: null });
+      setError(null);
+      setSavedAt(new Date());
+    } catch (e) {
+      setError(String(e));
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -39,10 +55,16 @@ function App() {
       <div style={{ padding: 8, display: "flex", gap: 8, alignItems: "center" }}>
         <button onClick={openFile}>Open file</button>
         {file && (
+          <button onClick={saveFile} disabled={saving}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+        )}
+        {file && (
           <span>
             {file.path} — {file.row_count.toLocaleString()} rows
           </span>
         )}
+        {savedAt && <span style={{ opacity: 0.6 }}>Saved {savedAt.toLocaleTimeString()}</span>}
         {error && <span style={{ color: "red" }}>{error}</span>}
       </div>
       {file && <Toolbar onNavigate={handleNavigate} />}
