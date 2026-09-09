@@ -1,49 +1,46 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { open } from "@tauri-apps/plugin-dialog";
+import { Grid } from "./components/Grid";
+
+interface FileMeta {
+  path: string;
+  row_count: number;
+}
 
 function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+  const [file, setFile] = useState<FileMeta | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+  async function openFile() {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "CSV", extensions: ["csv"] }],
+    });
+    if (!selected || Array.isArray(selected)) return;
+    try {
+      const meta = await invoke<FileMeta>("open_file", { path: selected });
+      setError(null);
+      setFile(meta);
+    } catch (e) {
+      setError(String(e));
+    }
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
-
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+    <main style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
+      <div style={{ padding: 8, display: "flex", gap: 8, alignItems: "center" }}>
+        <button onClick={openFile}>Open file</button>
+        {file && (
+          <span>
+            {file.path} — {file.row_count.toLocaleString()} rows
+          </span>
+        )}
+        {error && <span style={{ color: "red" }}>{error}</span>}
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
-
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
+      <div style={{ flex: 1, minHeight: 0 }}>
+        {file && <Grid rowCount={file.row_count} />}
+      </div>
     </main>
   );
 }
