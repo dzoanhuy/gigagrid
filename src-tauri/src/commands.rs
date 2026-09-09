@@ -63,6 +63,39 @@ fn get_rows_impl(
     Ok(rows)
 }
 
+#[tauri::command]
+pub fn search(
+    query: String,
+    from_row: usize,
+    direction: String,
+    state: State<AppState>,
+) -> Result<Option<usize>, String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
+    let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
+    let result = if direction == "prev" {
+        crate::search::find_prev(&open_file.index, &mut file, &query, from_row)
+    } else {
+        crate::search::find_next(&open_file.index, &mut file, &query, from_row)
+    };
+    Ok(result)
+}
+
+/// Validates `row` against the open file's row count. Column bounds are not
+/// tracked by `CsvIndex` (ragged rows are allowed, see index.rs) — the
+/// frontend already knows the field count of any row it has rendered, so
+/// column-only navigation is handled client-side without an IPC round trip.
+#[tauri::command]
+pub fn goto(row: usize, state: State<AppState>) -> Result<(), String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
+    let row_count = open_file.index.row_count();
+    if row >= row_count {
+        return Err(format!("row {row} out of range (0..{row_count})"));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

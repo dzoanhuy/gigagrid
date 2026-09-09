@@ -1,10 +1,14 @@
-import { useEffect, useRef, useState } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 const ROW_HEIGHT = 28;
 const OVERSCAN = 10;
 const FETCH_DEBOUNCE_MS = 50;
 const MAX_CACHE_ROWS = 20000;
+// Columns aren't fixed-width in this phase (cells auto-size to content), so
+// goto-column scroll is an estimate, not exact — good enough for "get roughly
+// there", refine later if a fixed column-width model is added.
+const ESTIMATED_COL_WIDTH = 120;
 
 export interface VisibleRange {
   start: number;
@@ -37,7 +41,12 @@ interface GridProps {
   rowCount: number;
 }
 
-export function Grid({ rowCount }: GridProps) {
+export interface GridHandle {
+  scrollToRow: (row: number) => void;
+  scrollToCol: (col: number) => void;
+}
+
+export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -52,6 +61,19 @@ export function Grid({ rowCount }: GridProps) {
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  useImperativeHandle(ref, () => ({
+    scrollToRow: (row: number) => {
+      const el = containerRef.current;
+      if (!el) return;
+      el.scrollTop = row * ROW_HEIGHT;
+    },
+    scrollToCol: (col: number) => {
+      const el = containerRef.current;
+      if (!el) return;
+      el.scrollLeft = col * ESTIMATED_COL_WIDTH;
+    },
+  }));
 
   const range = computeWindow(scrollTop, ROW_HEIGHT, viewportHeight, rowCount, OVERSCAN);
 
@@ -117,4 +139,4 @@ export function Grid({ rowCount }: GridProps) {
       </div>
     </div>
   );
-}
+});

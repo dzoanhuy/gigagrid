@@ -1,5 +1,6 @@
 mod commands;
 mod index;
+mod search;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -9,7 +10,9 @@ pub fn run() {
         .manage(std::sync::Mutex::new(None::<commands::OpenFile>))
         .invoke_handler(tauri::generate_handler![
             commands::open_file,
-            commands::get_rows
+            commands::get_rows,
+            commands::search,
+            commands::goto
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
