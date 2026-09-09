@@ -336,6 +336,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
               position: "sticky",
               left: 0,
               zIndex: 4,
+              flexShrink: 0,
               minWidth: GUTTER_WIDTH,
               height: HEADER_HEIGHT,
               background: "var(--bg)",
@@ -347,6 +348,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
               key={c}
               style={{
                 position: "relative",
+                flexShrink: 0,
                 width: colWidths[c] ?? DEFAULT_COL_WIDTH,
                 height: HEADER_HEIGHT,
                 display: "flex",
@@ -381,7 +383,8 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
                 position: "sticky",
                 left: 0,
                 zIndex: 4,
-                minWidth: GUTTER_WIDTH,
+                flexShrink: 0,
+              minWidth: GUTTER_WIDTH,
                 background: "var(--bg)",
                 display: "flex",
                 alignItems: "center",
@@ -393,7 +396,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
             </div>
           )}
           {frozenRow.map((cell, ci) => (
-            <div key={ci} style={{ position: "relative", width: colWidths[ci] ?? DEFAULT_COL_WIDTH, ...chromeBorder }}>
+            <div key={ci} style={{ position: "relative", flexShrink: 0, width: colWidths[ci] ?? DEFAULT_COL_WIDTH, ...chromeBorder }}>
               <Cell
                 value={cell}
                 onCommit={(v) => commitCell(0, ci, v)}
@@ -427,7 +430,8 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
                     position: "sticky",
                     left: 0,
                     zIndex: 2,
-                    minWidth: GUTTER_WIDTH,
+                    flexShrink: 0,
+              minWidth: GUTTER_WIDTH,
                     background: "var(--bg)",
                     display: "flex",
                     alignItems: "center",
@@ -446,14 +450,18 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
                 ? row.map((cell, ci) => (
                     <div
                       key={ci}
-                      onMouseDown={(e) =>
-                        e.shiftKey && selStart
-                          ? setSelEnd({ row: rowIndex, col: ci })
-                          : startSelect(rowIndex, ci)
-                      }
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        if (e.shiftKey && selStart) {
+                          setSelEnd({ row: rowIndex, col: ci });
+                        } else {
+                          startSelect(rowIndex, ci);
+                        }
+                      }}
                       onMouseEnter={() => extendSelect(rowIndex, ci)}
                       style={{
                         position: "relative",
+                        flexShrink: 0,
                         width: colWidths[ci] ?? DEFAULT_COL_WIDTH,
                         background: isSelected(rowIndex, ci) ? "rgba(70,130,255,0.25)" : undefined,
                         ...chromeBorder,
