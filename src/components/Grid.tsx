@@ -1,11 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { Cell } from "./Cell";
+import type { GridStats } from "./StatusBar";
 
 const ROW_HEIGHT = 28;
 const OVERSCAN = 10;
 const FETCH_DEBOUNCE_MS = 50;
 const MAX_CACHE_ROWS = 20000;
+const GUTTER_WIDTH = 48;
+const HEADER_HEIGHT = ROW_HEIGHT;
 // Columns aren't fixed-width in this phase (cells auto-size to content), so
 // goto-column scroll is an estimate, not exact — good enough for "get roughly
 // there", refine later if a fixed column-width model is added.
@@ -40,6 +43,9 @@ export function computeWindow(
 
 interface GridProps {
   rowCount: number;
+  showGridChrome: boolean;
+  freezeHeader: boolean;
+  onStatsChange?: (stats: GridStats) => void;
 }
 
 export interface GridHandle {
@@ -52,7 +58,7 @@ interface CellPos {
   col: number;
 }
 
-export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }, ref) {
+export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, showGridChrome, freezeHeader, onStatsChange }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -60,6 +66,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
   const [rowsByIndex, setRowsByIndex] = useState<Map<number, string[]>>(new Map());
   const [selStart, setSelStart] = useState<CellPos | null>(null);
   const [selEnd, setSelEnd] = useState<CellPos | null>(null);
+  const [editingRow, setEditingRow] = useState<number | null>(null);
   const selectingRef = useRef(false);
 
   useEffect(() => {
@@ -120,6 +127,15 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range.start, range.count]);
 
+  useEffect(() => {
+    if (!freezeHeader || rowCount === 0) return;
+    if (rowsByIndex.has(0)) return;
+    invoke<string[][]>("get_rows", { start: 0, count: 1 }).then((rows) => {
+      if (!rows[0]) return;
+      setRowsByIndex((prev) => new Map(prev).set(0, rows[0]));
+    });
+  }, [freezeHeader, rowCount]);
+
   function commitCell(rowIndex: number, colIndex: number, value: string) {
     invoke("set_cell", { row: rowIndex, col: colIndex, value }).then(() => {
       // Optimistic local update — get_rows already merges the overlay, but
@@ -153,6 +169,17 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
       colMax: Math.max(selStart.col, selEnd.col),
     };
   }
+
+  useEffect(() => {
+    const b = selectionBounds();
+    const colCount = rowsByIndex.get(0)?.length ?? 0;
+    onStatsChange?.({
+      totalCols: colCount,
+      cursor: selEnd,
+      selection: b ? { rows: b.rowMax - b.rowMin + 1, cols: b.colMax - b.colMin + 1 } : null,
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selStart, selEnd, rowsByIndex, onStatsChange]);
 
   function isSelected(row: number, col: number) {
     const b = selectionBounds();
@@ -243,6 +270,14 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
   }
 
   const totalHeight = rowCount * ROW_HEIGHT;
+  const colCount = rowsByIndex.get(0)?.length ?? 0;
+  const chromeOffset = showGridChrome ? HEADER_HEIGHT : 0;
+  const freezeOffset = freezeHeader ? HEADER_HEIGHT : 0;
+  const topOffset = chromeOffset + freezeOffset;
+  const chromeBorder = showGridChrome
+    ? { borderRight: "1px solid var(--border)", borderBottom: "1px solid var(--border)" }
+    : {};
+  const frozenRow = freezeHeader ? rowsByIndex.get(0) : undefined;
 
   return (
     <div
@@ -252,9 +287,80 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
       onKeyDown={handleKeyDown}
       style={{ overflow: "auto", height: "100%", position: "relative", outline: "none" }}
     >
-      <div style={{ height: totalHeight, position: "relative" }}>
+      {showGridChrome && (
+        <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: "var(--bg)" }}>
+          <div
+            style={{
+              position: "sticky",
+              left: 0,
+              zIndex: 4,
+              minWidth: GUTTER_WIDTH,
+              height: HEADER_HEIGHT,
+              background: "var(--bg)",
+              ...chromeBorder,
+            }}
+          />
+          {Array.from({ length: colCount }, (_, c) => (
+            <div
+              key={c}
+              style={{
+                minWidth: 100,
+                height: HEADER_HEIGHT,
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                ...chromeBorder,
+              }}
+            >
+              {c + 1}
+            </div>
+          ))}
+        </div>
+      )}
+      {freezeHeader && frozenRow && (
+        <div
+          style={{
+            position: "sticky",
+            top: chromeOffset,
+            zIndex: 3,
+            display: "flex",
+            height: HEADER_HEIGHT,
+            background: "var(--bg)",
+          }}
+        >
+          {showGridChrome && (
+            <div
+              style={{
+                position: "sticky",
+                left: 0,
+                zIndex: 4,
+                minWidth: GUTTER_WIDTH,
+                background: "var(--bg)",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                ...chromeBorder,
+              }}
+            >
+              1
+            </div>
+          )}
+          {frozenRow.map((cell, ci) => (
+            <div key={ci} style={{ position: "relative", minWidth: 100, ...chromeBorder }}>
+              <Cell
+                value={cell}
+                onCommit={(v) => commitCell(0, ci, v)}
+                onOverflow={() => handleOverflow(0)}
+                onEditingChange={(editing) => setEditingRow(editing ? 0 : null)}
+              />
+            </div>
+          ))}
+        </div>
+      )}
+      <div style={{ height: totalHeight, position: "relative", marginTop: topOffset }}>
         {Array.from({ length: range.count }, (_, i) => {
           const rowIndex = range.start + i;
+          if (freezeHeader && rowIndex === 0) return null;
           const row = rowsByIndex.get(rowIndex);
           return (
             <div
@@ -265,8 +371,26 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
                 height: ROW_HEIGHT,
                 display: "flex",
                 width: "100%",
+                zIndex: editingRow === rowIndex ? 5 : undefined,
               }}
             >
+              {showGridChrome && (
+                <div
+                  style={{
+                    position: "sticky",
+                    left: 0,
+                    zIndex: 2,
+                    minWidth: GUTTER_WIDTH,
+                    background: "var(--bg)",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    ...chromeBorder,
+                  }}
+                >
+                  {rowIndex + 1}
+                </div>
+              )}
               {row
                 ? row.map((cell, ci) => (
                     <div
@@ -274,14 +398,17 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount }
                       onMouseDown={() => startSelect(rowIndex, ci)}
                       onMouseEnter={() => extendSelect(rowIndex, ci)}
                       style={{
+                        position: "relative",
                         minWidth: 100,
                         background: isSelected(rowIndex, ci) ? "rgba(70,130,255,0.25)" : undefined,
+                        ...chromeBorder,
                       }}
                     >
                       <Cell
                         value={cell}
                         onCommit={(v) => commitCell(rowIndex, ci, v)}
                         onOverflow={() => handleOverflow(rowIndex)}
+                        onEditingChange={(editing) => setEditingRow(editing ? rowIndex : null)}
                       />
                     </div>
                   ))

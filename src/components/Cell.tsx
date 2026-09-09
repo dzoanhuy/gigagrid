@@ -1,18 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 
+const MAX_WIDTH = 400;
+const MAX_HEIGHT = 240;
+
 interface CellProps {
   value: string;
   onCommit: (value: string) => void;
   onOverflow?: () => void;
+  onEditingChange?: (editing: boolean) => void;
 }
 
 /** One editable cell: double-click/Enter to edit, Enter/blur to commit,
- * Escape to cancel. While editing, reports whether the input's content
- * overflows its own box so the parent Grid can auto-scroll to reveal it. */
-export function Cell({ value, onCommit, onOverflow }: CellProps) {
+ * Escape to cancel. Editing uses a textarea that auto-grows to fit content
+ * (up to MAX_WIDTH/MAX_HEIGHT, then scrolls internally) — Shift+Enter inserts
+ * a newline, plain Enter still commits. While editing, reports whether the
+ * content still overflows the grown box so the parent Grid can auto-scroll
+ * to reveal it. */
+export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(value);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (!editing) setDraft(value);
@@ -25,10 +32,20 @@ export function Cell({ value, onCommit, onOverflow }: CellProps) {
   }, [editing]);
 
   useEffect(() => {
+    onEditingChange?.(editing);
+  }, [editing, onEditingChange]);
+
+  useEffect(() => {
     if (!editing) return;
     const el = inputRef.current;
     if (!el) return;
-    if (el.scrollWidth > el.clientWidth || el.scrollHeight > el.clientHeight) {
+    el.style.width = "auto";
+    el.style.height = "auto";
+    const wantedWidth = Math.min(MAX_WIDTH, Math.max(100, el.scrollWidth));
+    const wantedHeight = Math.min(MAX_HEIGHT, Math.max(28, el.scrollHeight));
+    el.style.width = `${wantedWidth}px`;
+    el.style.height = `${wantedHeight}px`;
+    if (el.scrollWidth > wantedWidth || el.scrollHeight > wantedHeight) {
       onOverflow?.();
     }
   }, [editing, draft, onOverflow]);
@@ -45,16 +62,19 @@ export function Cell({ value, onCommit, onOverflow }: CellProps) {
 
   if (editing) {
     return (
-      <input
+      <textarea
         ref={inputRef}
         value={draft}
         onChange={(e) => setDraft(e.currentTarget.value)}
         onBlur={commit}
         onKeyDown={(e) => {
-          if (e.key === "Enter") commit();
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            commit();
+          }
           if (e.key === "Escape") cancel();
         }}
-        style={{ width: "100%", boxSizing: "border-box" }}
+        style={{ position: "absolute", zIndex: 1, boxSizing: "border-box", resize: "none" }}
       />
     );
   }
