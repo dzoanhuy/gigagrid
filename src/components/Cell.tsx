@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-const MAX_WIDTH = 400;
-const MAX_HEIGHT = 240;
+const MIN_WIDTH = 100;
+const MIN_HEIGHT = 28;
+const EDGE_MARGIN = 4;
 
 interface CellProps {
   value: string;
@@ -11,9 +12,10 @@ interface CellProps {
 }
 
 /** One editable cell: double-click/Enter to edit, Enter/blur to commit,
- * Escape to cancel. Editing uses a textarea that auto-grows to fit content
- * (up to MAX_WIDTH/MAX_HEIGHT, then scrolls internally) — Shift+Enter inserts
- * a newline, plain Enter still commits. While editing, reports whether the
+ * Escape to cancel. Editing uses a textarea that auto-grows to fit content,
+ * up to whatever space is left in the grid area (to its right/bottom edge —
+ * not a small fixed cap), then scrolls internally — Shift+Enter inserts a
+ * newline, plain Enter still commits. While editing, reports whether the
  * content still overflows the grown box so the parent Grid can auto-scroll
  * to reveal it. */
 export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps) {
@@ -39,18 +41,36 @@ export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps
     if (!editing) return;
     const el = inputRef.current;
     if (!el) return;
+    const scrollEl = el.closest<HTMLElement>("[data-gigagrid-scroll]");
+    const cellRect = el.getBoundingClientRect();
+    const scrollRect = scrollEl?.getBoundingClientRect();
+    const availableWidth = scrollRect
+      ? Math.max(MIN_WIDTH, scrollRect.right - cellRect.left - EDGE_MARGIN)
+      : MIN_WIDTH;
+    const availableHeight = scrollRect
+      ? Math.max(MIN_HEIGHT, scrollRect.bottom - cellRect.top - EDGE_MARGIN)
+      : MIN_HEIGHT;
+
+    // Pass 1: measure the content's UNWRAPPED natural width — with wrapping
+    // on (the default), a long single line just wraps at whatever narrow
+    // width the box already has and scrollWidth never reflects how wide the
+    // content actually wants to be, so width silently never grows.
+    el.style.whiteSpace = "pre";
     el.style.width = "auto";
     el.style.height = "auto";
-    const scrollEl = el.closest<HTMLElement>("[data-gigagrid-scroll]");
-    const availableToEdge = scrollEl
-      ? scrollEl.getBoundingClientRect().right - el.getBoundingClientRect().left - 4
-      : MAX_WIDTH;
-    const widthCap = Math.max(MAX_WIDTH, availableToEdge);
-    const wantedWidth = Math.min(widthCap, Math.max(100, el.scrollWidth));
-    const wantedHeight = Math.min(MAX_HEIGHT, Math.max(28, el.scrollHeight));
+    const naturalWidth = el.scrollWidth;
+    const wantedWidth = Math.min(availableWidth, Math.max(MIN_WIDTH, naturalWidth));
+
+    // Pass 2: lock the width, restore wrapping, then measure height against
+    // THAT width (wrapped line count depends on the width just chosen).
+    el.style.whiteSpace = "pre-wrap";
     el.style.width = `${wantedWidth}px`;
+    el.style.height = "auto";
+    const naturalHeight = el.scrollHeight;
+    const wantedHeight = Math.min(availableHeight, Math.max(MIN_HEIGHT, naturalHeight));
     el.style.height = `${wantedHeight}px`;
-    if (el.scrollWidth > wantedWidth || el.scrollHeight > wantedHeight) {
+
+    if (naturalWidth > wantedWidth || naturalHeight > wantedHeight) {
       onOverflow?.();
     }
   }, [editing, draft, onOverflow]);

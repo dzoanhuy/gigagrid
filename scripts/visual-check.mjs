@@ -38,6 +38,12 @@ window.__TAURI_INTERNALS__ = {
       window.__mockRows__ = Array.from({ length: 50 }, (_, r) =>
         Array.from({ length: 5 }, (_, c) => {
           if (r === 3 && c === 2) return "supercalifragilisticexpialidociousaverylongunbrokentoken";
+          if (r === 10 && c === 1)
+            return "The quick brown fox jumps over the lazy dog while several other equally verbose sentences pile up right behind it, one after another, until the whole thing reads like a run-on paragraph that nobody asked for but everybody has to edit anyway.";
+          if (r === 15 && c === 3)
+            return "line one\\nline two\\nline three\\nline four\\nline five\\nline six\\nline seven\\nline eight\\nline nine\\nline ten";
+          if (r === 20 && c === 4)
+            return Array.from({ length: 40 }, (_, i) => "line " + (i + 1)).join("\\n");
           return "r" + r + "c" + c + "_" + "x".repeat((r * 3 + c * 2) % 15);
         })
       );
@@ -159,6 +165,90 @@ async function main() {
     });
     await page.waitForTimeout(300);
     await page.screenshot({ path: path.join(OUT_DIR, "grid-scrolled-to-top-gap-check.png") });
+
+    // --- Check 4: edit box grows to available space for large content ---
+    // reset scroll, then double-click the long-sentence cell (row 10, col 1)
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 0;
+    });
+    await page.waitForTimeout(300);
+    const scrollBoxBefore = await page.evaluate(() => {
+      const el = document.querySelector("[data-gigagrid-scroll]");
+      const r = el.getBoundingClientRect();
+      return { right: r.right, bottom: r.bottom };
+    });
+    const rowsAfterRescroll = await page.$$(rowSelector);
+    const targetCell2 = async (rIdx, cIdx) => {
+      const rowEl = rowsAfterRescroll[rIdx];
+      const cells = await rowEl.$$(":scope > div");
+      const dataCellsOnly = [];
+      for (const c of cells) {
+        const pos = await c.evaluate((el) => getComputedStyle(el).position);
+        if (pos !== "sticky") dataCellsOnly.push(c);
+      }
+      return dataCellsOnly[cIdx];
+    };
+    const longTextCell = await targetCell2(9, 1); // logical row 10 = DOM idx 9 (freezeHeader excludes row 0)
+    await longTextCell.dblclick();
+    await page.waitForTimeout(300);
+    const editBoxSize = await page.evaluate(() => {
+      const ta = document.querySelector("textarea");
+      if (!ta) return null;
+      const r = ta.getBoundingClientRect();
+      return { width: r.width, height: r.height, right: r.right, bottom: r.bottom };
+    });
+    console.log("Edit box size for long wrapped sentence:", editBoxSize);
+    console.log("Scroll container right/bottom edge:", scrollBoxBefore);
+    if (editBoxSize) {
+      console.log(
+        "Edit box uses",
+        Math.round((editBoxSize.width / (scrollBoxBefore.right - 48)) * 100) + "%",
+        "of available width,",
+        Math.round((editBoxSize.height / (scrollBoxBefore.bottom - editBoxSize.bottom + editBoxSize.height)) * 100) + "%",
+        "of available height (rough)"
+      );
+    }
+    await page.screenshot({ path: path.join(OUT_DIR, "cell-edit-long-text.png") });
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+
+    // row 15 col 3, 10 explicit lines — vertical growth check
+    const multilineCell = await targetCell2(14, 3);
+    await multilineCell.dblclick();
+    await page.waitForTimeout(300);
+    const editBoxSize2 = await page.evaluate(() => {
+      const ta = document.querySelector("textarea");
+      if (!ta) return null;
+      const r = ta.getBoundingClientRect();
+      return { width: r.width, height: r.height };
+    });
+    console.log("Edit box size for 10-line content:", editBoxSize2);
+    await page.screenshot({ path: path.join(OUT_DIR, "cell-edit-multiline.png") });
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+
+    // row 20 col 4, 40 lines — cap should engage, box must stay within the app
+    const hugeCell = await targetCell2(19, 4);
+    await hugeCell.dblclick();
+    await page.waitForTimeout(300);
+    const editBoxSize3 = await page.evaluate(() => {
+      const ta = document.querySelector("textarea");
+      const scrollEl = document.querySelector("[data-gigagrid-scroll]");
+      if (!ta || !scrollEl) return null;
+      const r = ta.getBoundingClientRect();
+      const s = scrollEl.getBoundingClientRect();
+      return {
+        width: r.width,
+        height: r.height,
+        bottom: r.bottom,
+        containerBottom: s.bottom,
+        fitsWithinContainer: r.bottom <= s.bottom + 1,
+        hasInternalScroll: ta.scrollHeight > ta.clientHeight,
+      };
+    });
+    console.log("Edit box size for 40-line content (cap should engage):", editBoxSize3);
+    await page.screenshot({ path: path.join(OUT_DIR, "cell-edit-huge.png") });
+    await page.keyboard.press("Escape");
 
     await browser.close();
   } finally {
