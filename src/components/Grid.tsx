@@ -425,8 +425,13 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       const current = selEnd ?? { row: 0, col: 0 };
       const target = { ...current };
       if (mod) {
-        // Cmd/Ctrl+Arrow — jump straight to the edge.
-        if (e.key === "ArrowUp") target.row = 0;
+        // Cmd/Ctrl+Arrow — jump straight to the edge. When freezeHeader is
+        // on, row 0 is pinned as a title row (always visible regardless of
+        // scroll) — "jump to top" should land on the first row of actual
+        // data below it (row 1), not re-select the title row itself. Same
+        // target used for both the plain jump and Cmd+Shift+Up's extend
+        // (computed once below, branched into collapse-vs-extend after).
+        if (e.key === "ArrowUp") target.row = freezeHeader ? Math.min(1, Math.max(0, rowCount - 1)) : 0;
         else if (e.key === "ArrowDown") target.row = rowCount - 1;
         else if (e.key === "ArrowLeft") target.col = 0;
         else if (e.key === "ArrowRight") target.col = Math.max(0, colCount - 1);

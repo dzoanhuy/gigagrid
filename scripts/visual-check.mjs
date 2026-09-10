@@ -527,7 +527,8 @@ async function main() {
     await page.keyboard.press("Meta+ArrowUp");
     await page.waitForTimeout(200);
     console.log(
-      "Cursor after Cmd+ArrowUp (expect R1 — cursor must MOVE to row 0, not just scroll there):",
+      "Cursor after Cmd+ArrowUp (freezeHeader ON by default -> expect R2, the first data row" +
+        " BELOW the frozen title row, not R1 itself):",
       await cursorText(),
     );
     await page.screenshot({ path: path.join(OUT_DIR, "arrow-key-nav.png") });
