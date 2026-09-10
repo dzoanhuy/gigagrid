@@ -532,6 +532,60 @@ async function main() {
     );
     await page.screenshot({ path: path.join(OUT_DIR, "arrow-key-nav.png") });
 
+    // --- Check 10c: arrow-key nav does NOT scroll when the target cell is
+    // already visible; DOES scroll once it would go off-screen ---
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 0;
+      document.querySelector("[data-gigagrid-scroll]").scrollLeft = 0;
+    });
+    await page.waitForTimeout(200);
+    const rowsForNoScroll = await page.$$(rowSelector);
+    const targetCell5 = async (rIdx, cIdx) => {
+      const cells = await rowsForNoScroll[rIdx].$$(":scope > div");
+      const dataCellsOnly = [];
+      for (const c of cells) {
+        const pos = await c.evaluate((el) => getComputedStyle(el).position);
+        if (pos !== "sticky") dataCellsOnly.push(c);
+      }
+      return dataCellsOnly[cIdx];
+    };
+    const nearTopCell = await targetCell5(0, 0);
+    await nearTopCell.click();
+    await page.waitForTimeout(150);
+    const scrollTopBefore = await page.evaluate(
+      () => document.querySelector("[data-gigagrid-scroll]").scrollTop,
+    );
+    // a handful of ArrowDown presses that stay well within the visible
+    // viewport (this grid renders ~20+ rows at once) should NOT move the
+    // scrollbar at all
+    for (let i = 0; i < 3; i++) {
+      await page.keyboard.press("ArrowDown");
+      await page.waitForTimeout(80);
+    }
+    const scrollTopAfterSmallMoves = await page.evaluate(
+      () => document.querySelector("[data-gigagrid-scroll]").scrollTop,
+    );
+    console.log(
+      "scrollTop before/after 3 in-view ArrowDown presses:",
+      scrollTopBefore,
+      "->",
+      scrollTopAfterSmallMoves,
+      scrollTopBefore === scrollTopAfterSmallMoves ? "(unchanged, correct)" : "(BUG: scrolled while still visible)",
+    );
+    // now press ArrowDown enough times to genuinely go off the bottom edge
+    for (let i = 0; i < 30; i++) {
+      await page.keyboard.press("ArrowDown");
+    }
+    await page.waitForTimeout(150);
+    const scrollTopAfterOffscreen = await page.evaluate(
+      () => document.querySelector("[data-gigagrid-scroll]").scrollTop,
+    );
+    console.log(
+      "scrollTop after moving off-screen (30 more ArrowDown):",
+      scrollTopAfterOffscreen,
+      scrollTopAfterOffscreen > scrollTopAfterSmallMoves ? "(scrolled, correct)" : "(BUG: did not scroll)",
+    );
+
     // --- Check 11: header/frozen-row bar background covers the FULL
     // scrollable width, not just the viewport — resize a column wide enough
     // to force horizontal scroll, scroll all the way right, and compare the

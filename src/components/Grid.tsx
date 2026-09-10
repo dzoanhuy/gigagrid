@@ -151,14 +151,41 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
   // Shared by the imperative handle (goto/search) and keyboard navigation
   // (arrow keys) — every caller that moves the cursor/selection needs the
   // new position scrolled into view the same way.
+  // Scrolls (row, col) into view ONLY if it isn't already fully visible —
+  // an unconditional snap-to-position on every arrow-key press (the
+  // original behavior) re-centers the viewport even when the target cell
+  // was already on screen, which reads as the grid scrolling on its own
+  // for no reason. `topCover`/`leftCover` account for the sticky
+  // header/frozen-row bar and row-number gutter visually covering part of
+  // the scrollable area even though it's still within scrollTop/scrollLeft
+  // range — a cell freshly scrolled to `visibleTop` would otherwise sit
+  // right underneath those bars, invisible.
   function scrollCellIntoView(row: number, col: number) {
     const el = containerRef.current;
     if (!el) return;
     const offset = freezeHeader ? Math.max(0, row - 1) : row;
-    el.scrollTop = offset * rowHeight;
-    let left = 0;
-    for (let c = 0; c < col; c++) left += colWidths[c] ?? DEFAULT_COL_WIDTH;
-    el.scrollLeft = left;
+    const rowTop = offset * rowHeight;
+    const rowBottom = rowTop + rowHeight;
+    const topCover = (showGridChrome ? HEADER_HEIGHT : 0) + (freezeHeader ? HEADER_HEIGHT : 0);
+    const visibleTop = el.scrollTop + topCover;
+    const visibleBottom = el.scrollTop + el.clientHeight;
+    if (rowTop < visibleTop) {
+      el.scrollTop = rowTop - topCover;
+    } else if (rowBottom > visibleBottom) {
+      el.scrollTop = rowBottom - el.clientHeight;
+    }
+
+    let colLeft = 0;
+    for (let c = 0; c < col; c++) colLeft += colWidths[c] ?? DEFAULT_COL_WIDTH;
+    const colRight = colLeft + (colWidths[col] ?? DEFAULT_COL_WIDTH);
+    const leftCover = showGridChrome ? GUTTER_WIDTH : 0;
+    const visibleLeft = el.scrollLeft + leftCover;
+    const visibleRight = el.scrollLeft + el.clientWidth;
+    if (colLeft < visibleLeft) {
+      el.scrollLeft = colLeft - leftCover;
+    } else if (colRight > visibleRight) {
+      el.scrollLeft = colRight - el.clientWidth;
+    }
   }
 
   useImperativeHandle(ref, () => ({
