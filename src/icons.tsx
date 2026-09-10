@@ -93,6 +93,14 @@ export function IconHash() {
   );
 }
 
+export function IconReplace() {
+  return (
+    <svg {...common}>
+      <path d="M4 7h13l-3-3M20 17H7l3 3" />
+    </svg>
+  );
+}
+
 export function IconDownload() {
   return (
     <svg {...common}>

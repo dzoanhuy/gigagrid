@@ -246,6 +246,61 @@ pub fn count_matches(query: String, tab_id: TabId, state: State<AppState>) -> Re
     Ok(crate::search::count_matches(&open_file.index, &mut file, &query))
 }
 
+/// Replace ALL occurrences of `query` across the whole file in one undo
+/// step. Returns how many CELLS were changed (0 means nothing matched —
+/// the frontend uses this to skip an empty-no-op undo push / cache
+/// invalidation).
+#[tauri::command]
+pub fn replace_all(
+    query: String,
+    replacement: String,
+    tab_id: TabId,
+    state: State<AppState>,
+) -> Result<usize, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
+    let edits = crate::search::compute_replace_all(&open_file.index, &mut file, &open_file.overlay, &query, &replacement);
+    let count = edits.len();
+    if count > 0 {
+        open_file.overlay.set_many(edits);
+    }
+    Ok(count)
+}
+
+/// Replace within a single cell (the one the search cursor is currently
+/// on) — "Replace" as opposed to "Replace All". Returns false if that cell
+/// didn't actually contain `query` (nothing changed, no undo entry).
+#[tauri::command]
+pub fn replace_cell(
+    row: usize,
+    col: usize,
+    query: String,
+    replacement: String,
+    tab_id: TabId,
+    state: State<AppState>,
+) -> Result<bool, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
+    let new_value = crate::search::compute_replace_cell(
+        &open_file.index,
+        &mut file,
+        &open_file.overlay,
+        row,
+        col,
+        &query,
+        &replacement,
+    );
+    match new_value {
+        Some(v) => {
+            open_file.overlay.set(row, col, v);
+            Ok(true)
+        }
+        None => Ok(false),
+    }
+}
+
 /// Validates `row` against the open file's row count. Column bounds are not
 /// tracked by `CsvIndex` (ragged rows are allowed, see index.rs) — the
 /// frontend already knows the field count of any row it has rendered, so

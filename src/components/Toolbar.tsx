@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { IconSearch, IconHash } from "../icons";
+import { IconSearch, IconHash, IconReplace } from "../icons";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
@@ -9,6 +9,7 @@ interface ToolbarProps {
   visible: boolean;
   onNavigate: (row: number, col?: number) => void;
   onToggleSearch: () => void;
+  onReplaced: () => void;
 }
 
 export interface ToolbarHandle {
@@ -24,11 +25,13 @@ export interface ToolbarHandle {
  * small popup opened from its own icon (closes itself after a successful
  * jump or Escape), matching the "Go to Line" pattern of most editors. */
 export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
-  { tabId, visible, onNavigate, onToggleSearch },
+  { tabId, visible, onNavigate, onToggleSearch, onReplaced },
   ref,
 ) {
   const [query, setQuery] = useState("");
   const [showGoto, setShowGoto] = useState(false);
+  const [showReplace, setShowReplace] = useState(false);
+  const [replacement, setReplacement] = useState("");
   // col:0, not -1 — `fromCol` deserializes into a Rust `usize` on the
   // backend, which rejects a negative number outright (the whole `invoke`
   // call fails silently since nothing here used to .catch() it — count
@@ -63,6 +66,13 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     from: { row: number; col: number },
     direction: "next" | "prev",
     isInitial = false,
+    // Only replaceCurrent needs this: it already knows the FRESH total (it
+    // just awaited count_matches) before calling runSearch to advance —
+    // reading `totalMatchesRef.current` instead would race the ref's own
+    // update (which only lands after React re-renders from the sibling
+    // `setTotalMatches` call), showing a stale ordinal against the just-
+    // shrunk match count.
+    knownTotal?: number,
   ) {
     if (!q) return;
     invoke<[number, number] | null>("search", {
@@ -83,7 +93,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           setMatchOrdinal(1);
         } else {
           setMatchOrdinal((prev) => {
-            const total = totalMatchesRef.current;
+            const total = knownTotal ?? totalMatchesRef.current;
             if (!total) return prev;
             const next = direction === "next" ? prev + 1 : prev - 1;
             return ((next - 1 + total) % total) + 1;
@@ -97,6 +107,42 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
         // just never moved) — surface it instead of swallowing it.
         console.error("search failed:", err);
       });
+  }
+
+  // Replaces the cell the search cursor currently sits on, then advances to
+  // the NEXT match — the just-replaced cell no longer contains `query`, so
+  // it can never come up again on its own, matching the usual
+  // find-and-replace "Replace" behavior of stepping forward each time.
+  async function replaceCurrent() {
+    if (!query) return;
+    try {
+      const changed = await invoke<boolean>("replace_cell", {
+        row: cursor.row,
+        col: cursor.col,
+        query,
+        replacement,
+        tabId,
+      });
+      if (!changed) return;
+      onReplaced();
+      const freshTotal = await invoke<number>("count_matches", { tabId, query });
+      setTotalMatches(freshTotal);
+      runSearch(query, cursor, "next", false, freshTotal);
+    } catch (err) {
+      console.error("replace failed:", err);
+    }
+  }
+
+  function replaceAll() {
+    if (!query) return;
+    invoke<number>("replace_all", { query, replacement, tabId })
+      .then((count) => {
+        if (count === 0) return;
+        onReplaced();
+        setTotalMatches(0);
+        setMatchOrdinal(0);
+      })
+      .catch((err) => console.error("replace all failed:", err));
   }
 
   useEffect(() => {
@@ -152,6 +198,38 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
                   ? "0 / 0"
                   : `${matchOrdinal} / ${totalMatches}`}
             </span>
+          )}
+          <button
+            className="icon-btn"
+            data-active={showReplace}
+            title="Toggle replace"
+            onClick={() => setShowReplace((v) => !v)}
+          >
+            <IconReplace />
+          </button>
+          {showReplace && (
+            <>
+              <input
+                placeholder="Replace…"
+                value={replacement}
+                onChange={(e) => setReplacement(e.currentTarget.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    replaceCurrent();
+                  } else if (e.key === "Escape") {
+                    setShowReplace(false);
+                  }
+                }}
+                style={{ width: 140 }}
+              />
+              <button onClick={replaceCurrent} disabled={!query}>
+                Replace
+              </button>
+              <button onClick={replaceAll} disabled={!query}>
+                Replace All
+              </button>
+            </>
           )}
         </div>
       )}

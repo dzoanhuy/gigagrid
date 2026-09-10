@@ -96,6 +96,62 @@ pub fn count_matches(index: &CsvIndex, file: &mut File, query: &str) -> usize {
     count
 }
 
+/// Computes every cell edit needed to replace ALL occurrences of `query`
+/// with `replacement` in every cell that contains it, across the WHOLE
+/// file — same "read through the overlay first" rule as every other read
+/// path (a cell already edited gets replaced against its CURRENT value,
+/// not the stale raw one). Doesn't mutate anything; the caller applies the
+/// result via `Overlay::set_many` so the whole replace-all lands in ONE
+/// undo group, same as a paste.
+pub fn compute_replace_all(
+    index: &CsvIndex,
+    file: &mut File,
+    overlay: &Overlay,
+    query: &str,
+    replacement: &str,
+) -> Vec<(usize, usize, String)> {
+    let mut edits = Vec::new();
+    if query.is_empty() {
+        return edits;
+    }
+    let row_count = index.row_count();
+    for r in 0..row_count {
+        if let Ok(row) = index.read_row(file, r) {
+            for c in 0..row.len() {
+                let current = overlay.get(r, c).cloned().unwrap_or_else(|| row[c].clone());
+                if current.contains(query) {
+                    edits.push((r, c, current.replace(query, replacement)));
+                }
+            }
+        }
+    }
+    edits
+}
+
+/// Same replace, scoped to a single cell — used by "Replace" (as opposed to
+/// "Replace All") on whatever cell the search cursor currently sits on.
+/// Returns `None` if the cell doesn't actually contain `query` (nothing to
+/// do) so the caller doesn't push a no-op undo entry.
+pub fn compute_replace_cell(
+    index: &CsvIndex,
+    file: &mut File,
+    overlay: &Overlay,
+    row: usize,
+    col: usize,
+    query: &str,
+    replacement: &str,
+) -> Option<String> {
+    if query.is_empty() {
+        return None;
+    }
+    let raw = index.read_row(file, row).ok()?.get(col)?.clone();
+    let current = overlay.get(row, col).cloned().unwrap_or(raw);
+    if !current.contains(query) {
+        return None;
+    }
+    Some(current.replace(query, replacement))
+}
+
 /// Returns ORIGINAL row indices in the desired display order/subset — a
 /// permutation (or filtered subset), never a data copy. Values are read
 /// through the overlay merge, so an edited cell is what gets sorted/
@@ -227,6 +283,68 @@ mod tests {
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
         assert_eq!(count_matches(&index, &mut file, ""), 0);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn compute_replace_all_finds_every_matching_cell_across_the_file() {
+        let path = write_temp("replace_all", "foo,x\nbarfoo,foobar\ny,z\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        let overlay = Overlay::new();
+        let mut edits = compute_replace_all(&index, &mut file, &overlay, "foo", "QUX");
+        edits.sort();
+        assert_eq!(
+            edits,
+            vec![
+                (0, 0, "QUX".to_string()),
+                (1, 0, "barQUX".to_string()),
+                (1, 1, "QUXbar".to_string()),
+            ]
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn compute_replace_all_reads_through_overlay_not_stale_raw_value() {
+        let path = write_temp("replace_all_overlay", "raw,x\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        let mut overlay = Overlay::new();
+        overlay.set(0, 0, "editedfoo".to_string());
+        let edits = compute_replace_all(&index, &mut file, &overlay, "foo", "bar");
+        assert_eq!(edits, vec![(0, 0, "editedbar".to_string())]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn compute_replace_all_empty_query_replaces_nothing() {
+        let path = write_temp("replace_all_empty", "a,b\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        let overlay = Overlay::new();
+        assert_eq!(compute_replace_all(&index, &mut file, &overlay, "", "x"), Vec::new());
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn compute_replace_cell_replaces_all_occurrences_within_that_one_cell() {
+        let path = write_temp("replace_cell", "foofoo,other\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        let overlay = Overlay::new();
+        let result = compute_replace_cell(&index, &mut file, &overlay, 0, 0, "foo", "bar");
+        assert_eq!(result, Some("barbar".to_string()));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn compute_replace_cell_none_when_cell_has_no_match() {
+        let path = write_temp("replace_cell_none", "a,b\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        let overlay = Overlay::new();
+        assert_eq!(compute_replace_cell(&index, &mut file, &overlay, 0, 0, "zzz", "y"), None);
         std::fs::remove_file(&path).ok();
     }
 

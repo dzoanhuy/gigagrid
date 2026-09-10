@@ -33,6 +33,8 @@ pub fn run() {
             commands::get_rows,
             commands::search,
             commands::count_matches,
+            commands::replace_all,
+            commands::replace_cell,
             commands::goto,
             commands::set_cell,
             commands::set_cells_batch,

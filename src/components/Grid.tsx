@@ -79,6 +79,7 @@ export interface GridHandle {
   scrollToRow: (row: number) => void;
   scrollToCol: (col: number) => void;
   selectCell: (row: number, col: number) => void;
+  invalidateCache: () => void;
 }
 
 interface CellPos {
@@ -228,6 +229,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
       setSelEnd({ row, col });
       scrollCellIntoView(row, col);
     },
+    invalidateCache,
   }));
 
   // When freezeHeader is on, row 0 is permanently shown via the frozen bar and

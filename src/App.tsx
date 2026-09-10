@@ -201,6 +201,15 @@ function App() {
     else handle?.scrollToRow(row);
   }
 
+  // Replace happens entirely through the backend overlay (Toolbar never
+  // touches Grid's own cache) — the grid's cached rows would otherwise
+  // keep showing the pre-replace values until they scroll out of and back
+  // into view, same reasoning as undo/redo invalidating the cache.
+  function handleReplacedFor(tabId: number) {
+    gridRefs.current.get(tabId)?.invalidateCache();
+    updateTab(tabId, { dirty: true });
+  }
+
   const ThemeIcon = settings.theme === "system" ? IconMonitor : settings.theme === "light" ? IconSun : IconMoon;
 
   return (
@@ -268,6 +277,7 @@ function App() {
               visible={tab.showSearch}
               onNavigate={(row, col) => handleNavigateFor(tab.meta.tab_id, row, col)}
               onToggleSearch={() => toggleSearch(tab.meta.tab_id)}
+              onReplaced={() => handleReplacedFor(tab.meta.tab_id)}
             />
           </div>
         ))}

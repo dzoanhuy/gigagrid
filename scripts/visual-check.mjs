@@ -103,6 +103,28 @@ window.__TAURI_INTERNALS__ = {
     }
     if (cmd === "goto") return null;
     if (cmd === "set_cell" || cmd === "set_cells_batch") return null;
+    if (cmd === "replace_all") {
+      const { query, replacement } = args;
+      if (!query) return 0;
+      let count = 0;
+      for (const row of rows) {
+        for (let c = 0; c < row.length; c++) {
+          if (row[c].includes(query)) {
+            row[c] = row[c].split(query).join(replacement);
+            count++;
+          }
+        }
+      }
+      return count;
+    }
+    if (cmd === "replace_cell") {
+      const { row, col, query, replacement } = args;
+      if (!query) return false;
+      const r = rows[row];
+      if (!r || r[col] === undefined || !r[col].includes(query)) return false;
+      r[col] = r[col].split(query).join(replacement);
+      return true;
+    }
     if (cmd === "undo" || cmd === "redo") return false;
     if (cmd === "save_file") return null;
     if (cmd === "take_pending_open") return null;
@@ -745,6 +767,73 @@ async function main() {
     await page.waitForTimeout(150);
     console.log("Cursor after ArrowDown right after commit (expect it moved, proving focus returned to the grid):", await cursorText());
     await page.screenshot({ path: path.join(OUT_DIR, "enter-commit-then-arrow.png") });
+
+    // --- Check 15: Find & Replace — "Replace" advances to the next match
+    // and only touches the current cell; "Replace All" clears every
+    // remaining match across the file. Uses the same "needle-match" cells
+    // from Check 8 (row 5 col 2, row 30 col 0 — 2 total matches). ---
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 0;
+    });
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Meta+f");
+    await page.waitForTimeout(200);
+    // The search box's `query`/cursor/count state survives a prior Cmd+F
+    // toggle-off (the Toolbar stays mounted, only its rendered UI is
+    // hidden) — Check 8 left it sitting on match 2/2. Clearing first makes
+    // the query state actually CHANGE when re-filled with "needle-match"
+    // (React bails on a same-value re-set), which is what re-triggers the
+    // effect that resets the search cursor back to the FIRST match.
+    await page.fill('input[placeholder="Search…"]', "");
+    await page.waitForTimeout(200);
+    await page.fill('input[placeholder="Search…"]', "needle-match");
+    await page.waitForTimeout(400);
+    console.log("Match count before replace (expect 1 / 2):", await page.evaluate(() => {
+      const spans = Array.from(document.querySelectorAll("span"));
+      const hit = spans.find((s) => /\d+ \/ \d+/.test(s.textContent || ""));
+      return hit ? hit.textContent : null;
+    }));
+
+    await page.click('button[title="Toggle replace"]');
+    await page.waitForTimeout(150);
+    await page.fill('input[placeholder="Replace…"]', "REPLACED");
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Replace");
+      btn.click();
+    });
+    await page.waitForTimeout(300);
+    const afterOneReplace = await page.evaluate(() => window.__mockRows__[5][2]);
+    console.log("Row5/Col2 value after single 'Replace' (expect 'REPLACED-one', was 'needle-match-one'):", afterOneReplace);
+    const renderedCellText = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll('[data-gigagrid-scroll] > div:last-child > div'));
+      for (const rowEl of rows) {
+        const dataCells = Array.from(rowEl.children).filter((c) => getComputedStyle(c).position !== "sticky");
+        if (dataCells[2]?.textContent === "REPLACED-one") return dataCells[2].textContent;
+      }
+      return null;
+    });
+    console.log("Rendered DOM shows the replaced value somewhere after cache-invalidation refetch (expect 'REPLACED-one'):", renderedCellText);
+    const countAfterOne = await page.evaluate(() => {
+      const spans = Array.from(document.querySelectorAll("span"));
+      const hit = spans.find((s) => /\d+ \/ \d+/.test(s.textContent || ""));
+      return hit ? hit.textContent : null;
+    });
+    console.log("Match count after single Replace (expect 1 / 1 — ordinal reset to the fresh total, not racing the stale one):", countAfterOne);
+
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Replace All");
+      btn.click();
+    });
+    await page.waitForTimeout(300);
+    const afterReplaceAll = await page.evaluate(() => window.__mockRows__[30][0]);
+    console.log("Row30/Col0 value after 'Replace All' (expect 'REPLACED-two', was 'needle-match-two'):", afterReplaceAll);
+    const countAfterAll = await page.evaluate(() => {
+      const spans = Array.from(document.querySelectorAll("span"));
+      const hit = spans.find((s) => /\d+ \/ \d+/.test(s.textContent || ""));
+      return hit ? hit.textContent : null;
+    });
+    console.log("Match count after Replace All (expect 0 / 0 stays until re-search — this reads the last count refresh):", countAfterAll);
+    await page.screenshot({ path: path.join(OUT_DIR, "find-and-replace.png") });
 
     await browser.close();
   } finally {
