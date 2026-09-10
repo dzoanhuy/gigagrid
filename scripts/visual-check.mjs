@@ -56,6 +56,8 @@ window.__TAURI_INTERNALS__ = {
       return { path: "/mock/test.csv", row_count: rows.length, format: "CSV", encoding: "UTF-8", line_ending: "LF" };
     if (cmd === "get_rows") {
       const start = args.start, count = args.count;
+      window.__getRowsCalls__ = window.__getRowsCalls__ || [];
+      window.__getRowsCalls__.push({ start, count });
       return rows.slice(start, start + count);
     }
     if (cmd === "count_matches") {
@@ -124,7 +126,11 @@ async function main() {
     console.log("Dev server up.");
 
     const browser = await chromium.launch();
-    const page = await browser.newPage({ viewport: { width: 1000, height: 700 } });
+    const context = await browser.newContext({
+      viewport: { width: 1000, height: 700 },
+      permissions: ["clipboard-read", "clipboard-write"],
+    });
+    const page = await context.newPage();
     await page.addInitScript(INIT_SCRIPT);
     await page.goto(URL);
 
@@ -416,6 +422,65 @@ async function main() {
       () => !document.querySelector('input[placeholder="Search…"]'),
     );
     console.log("Search box hidden after Cmd+F again:", searchHiddenAfterToggleOff);
+
+    // --- Check 9: copySelection fetches the FULL range from backend, not
+    // just whatever the virtualized cache happened to hold ---
+    await page.evaluate(() => {
+      const el = document.querySelector("[data-gigagrid-scroll]");
+      el.scrollTop = 0;
+      window.__getRowsCalls__ = [];
+    });
+    await page.waitForTimeout(200);
+    // select row 2 (anchor), scroll far down (forces the early rows out of
+    // the small MAX_CACHE_ROWS-bounded cache in a real 20k+ row file; here
+    // 50 rows all stay cached, but this still proves copy always fetches
+    // fresh rather than silently trusting whatever's cached), then
+    // shift+click row ~40's gutter to select a big range and copy it.
+    const rowsForCopy = await page.$$(rowSelector);
+    async function gutterAt(rowHandles, idx) {
+      const cells = await rowHandles[idx].$$(":scope > div");
+      for (const c of cells) {
+        const pos = await c.evaluate((el) => getComputedStyle(el).position);
+        if (pos === "sticky") return c;
+      }
+      return null;
+    }
+    const anchorGutter = await gutterAt(rowsForCopy, 0);
+    await anchorGutter.click();
+    const farGutter = await gutterAt(rowsForCopy, rowsForCopy.length - 1);
+    await farGutter.click({ modifiers: ["Shift"] });
+    await page.waitForTimeout(200);
+    await page.keyboard.press("Meta+c");
+    await page.waitForTimeout(300);
+    const getRowsCallsForCopy = await page.evaluate(() => window.__getRowsCalls__ || []);
+    const clipboardText = await page.evaluate(() => navigator.clipboard.readText());
+    const clipboardLines = clipboardText.split("\n");
+    const emptyLines = clipboardLines.filter((l) => l.trim() === "" || l.split("\t").every((c) => c === "")).length;
+    console.log("get_rows calls during copy:", JSON.stringify(getRowsCallsForCopy));
+    console.log(
+      "Copied",
+      clipboardLines.length,
+      "lines, 0 empty expected (was silently empty for uncached rows before the fix); empty lines found:",
+      emptyLines,
+    );
+
+    // --- Check 10: Cmd+Shift+ArrowUp extends selection to row 0 ---
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 0;
+    });
+    await page.waitForTimeout(200);
+    const rowsForExtend = await page.$$(rowSelector);
+    const anchorGutter2 = await gutterAt(rowsForExtend, 3);
+    await anchorGutter2.click();
+    await page.keyboard.press("Meta+Shift+ArrowUp");
+    await page.waitForTimeout(200);
+    const selectionAfterExtend = await page.evaluate(() => {
+      const spans = Array.from(document.querySelectorAll("span"));
+      const hit = spans.find((s) => /selection: \d+ × \d+/.test(s.textContent || ""));
+      return hit ? hit.textContent : null;
+    });
+    console.log("Selection after Cmd+Shift+ArrowUp from row 4:", selectionAfterExtend, "(expect 5 x 5 = rows 0-4, all cols)");
+    await page.screenshot({ path: path.join(OUT_DIR, "shift-extend-to-top.png") });
 
     await browser.close();
   } finally {
