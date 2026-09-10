@@ -166,9 +166,16 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
     const el = containerRef.current;
     if (!el) return;
     const offset = freezeHeader ? Math.max(0, row - 1) : row;
-    const rowTop = offset * rowHeight;
-    const rowBottom = rowTop + rowHeight;
+    // rows/cells render inside a wrapper that sits AFTER the sticky
+    // header/gutter in normal flow — those bars still consume real flow
+    // space even though they're pinned visually, so a row/col's actual
+    // position within the scrollable content is offset by topCover/leftCover,
+    // not just the local offset*rowHeight / summed colWidths. Omitting this
+    // here previously under-scrolled by exactly that many px, leaving the
+    // target cell still clipped at the bottom/right edge after "jumping" to it.
     const topCover = (showGridChrome ? HEADER_HEIGHT : 0) + (freezeHeader ? HEADER_HEIGHT : 0);
+    const rowTop = topCover + offset * rowHeight;
+    const rowBottom = rowTop + rowHeight;
     const visibleTop = el.scrollTop + topCover;
     const visibleBottom = el.scrollTop + el.clientHeight;
     if (rowTop < visibleTop) {
@@ -177,10 +184,10 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
       el.scrollTop = rowBottom - el.clientHeight;
     }
 
-    let colLeft = 0;
+    const leftCover = showGridChrome ? GUTTER_WIDTH : 0;
+    let colLeft = leftCover;
     for (let c = 0; c < col; c++) colLeft += colWidths[c] ?? DEFAULT_COL_WIDTH;
     const colRight = colLeft + (colWidths[col] ?? DEFAULT_COL_WIDTH);
-    const leftCover = showGridChrome ? GUTTER_WIDTH : 0;
     const visibleLeft = el.scrollLeft + leftCover;
     const visibleRight = el.scrollLeft + el.clientWidth;
     if (colLeft < visibleLeft) {
@@ -654,6 +661,12 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                     <div
                       key={ci}
                       onMouseDown={(e) => {
+                        // A mousedown on this cell's own <textarea> while it's
+                        // being edited (e.g. dragging its internal scrollbar
+                        // thumb) still bubbles up to this wrapper — stealing
+                        // focus back to the grid container here would blur the
+                        // textarea and commit/close the edit mid-drag.
+                        if ((e.target as HTMLElement).tagName === "TEXTAREA") return;
                         e.preventDefault();
                         if (e.shiftKey && selStart) {
                           setSelEnd({ row: rowIndex, col: ci });
