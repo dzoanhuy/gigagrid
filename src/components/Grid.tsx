@@ -294,16 +294,16 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     setRowsByIndex(new Map());
   }
 
-  async function copySelection() {
+  function copySelection() {
     const b = selectionBounds();
-    if (!b) return;
-    try {
-      // Never read from `rowsByIndex` here — it only holds whatever the
-      // virtualized viewport has scrolled through, which for a selection
-      // that spans far beyond the visible window is nearly all of it: most
-      // rows would silently copy as empty. Fetch fresh from the backend
-      // instead (this also merges the overlay, same as every other read
-      // path), chunked (see fetchRowsInChunks).
+    if (!b) return Promise.resolve();
+    // Never read from `rowsByIndex` here — it only holds whatever the
+    // virtualized viewport has scrolled through, which for a selection
+    // that spans far beyond the visible window is nearly all of it: most
+    // rows would silently copy as empty. Fetch fresh from the backend
+    // instead (this also merges the overlay, same as every other read
+    // path), chunked (see fetchRowsInChunks).
+    const textPromise = (async () => {
       const totalRows = b.rowMax - b.rowMin + 1;
       const allRows = await fetchRowsInChunks(b.rowMin, totalRows, COPY_CHUNK_ROWS, (s, c) =>
         invoke<string[][]>("get_rows", { start: s, count: c }),
@@ -316,11 +316,25 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
         }
         lines.push(cells.join("\t"));
       }
-      await navigator.clipboard.writeText(lines.join("\n"));
-      onError?.(null);
-    } catch (err) {
-      onError?.(`Copy failed: ${err}`);
-    }
+      return new Blob([lines.join("\n")], { type: "text/plain" });
+    })();
+    // `navigator.clipboard.write` (NOT `.writeText`) MUST be called
+    // synchronously, right here, with no `await` before it — clipboard
+    // writes require a still-live "user activation" from the triggering
+    // Cmd/Ctrl+C keydown, which expires while a large selection's chunked
+    // fetch is still in flight. `writeText` needs the STRING up front (so
+    // the old code only called it after every chunk resolved, well past
+    // that window — "NotAllowedError: ... possibly because the user denied
+    // permission" for any selection slow enough to fetch). Passing a
+    // ClipboardItem whose value is a *pending* Blob promise is the
+    // documented way to reserve the write against the CURRENT activation
+    // while the actual content is still being prepared.
+    return navigator.clipboard
+      .write([new ClipboardItem({ "text/plain": textPromise })])
+      .then(() => onError?.(null))
+      .catch((err) => {
+        onError?.(`Copy failed: ${err}`);
+      });
   }
 
   async function pasteSelection() {
