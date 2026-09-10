@@ -271,9 +271,17 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
   async function copySelection() {
     const b = selectionBounds();
     if (!b) return;
+    // Never read from `rowsByIndex` here — it only holds whatever the
+    // virtualized viewport has scrolled through, which for a selection that
+    // spans far beyond the visible window (e.g. shift-click row 1 -> row
+    // 10000) is nearly all of it: most rows would silently copy as empty.
+    // Fetch the exact selected range fresh from the backend instead (this
+    // also merges the overlay, same as every other read path).
+    const count = b.rowMax - b.rowMin + 1;
+    const rows = await invoke<string[][]>("get_rows", { start: b.rowMin, count });
     const lines: string[] = [];
-    for (let r = b.rowMin; r <= b.rowMax; r++) {
-      const row = rowsByIndex.get(r);
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i];
       const cells: string[] = [];
       for (let c = b.colMin; c <= b.colMax; c++) {
         cells.push(row?.[c] ?? "");
@@ -331,6 +339,26 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       e.preventDefault();
       setSelStart({ row: 0, col: 0 });
       setSelEnd({ row: rowCount - 1, col: Math.max(0, colCount - 1) });
+    } else if (
+      e.shiftKey &&
+      (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight")
+    ) {
+      // Cmd/Ctrl+Shift+Arrow — Excel-style "extend selection to the edge":
+      // keep the existing anchor (selStart), push the far corner (selEnd)
+      // all the way to the top/bottom/first/last row or column.
+      e.preventDefault();
+      if (!selStart || !selEnd) return;
+      const target = { ...selEnd };
+      if (e.key === "ArrowUp") target.row = 0;
+      else if (e.key === "ArrowDown") target.row = rowCount - 1;
+      else if (e.key === "ArrowLeft") target.col = 0;
+      else if (e.key === "ArrowRight") target.col = Math.max(0, colCount - 1);
+      setSelEnd(target);
+      const el = containerRef.current;
+      if (el) {
+        const offset = freezeHeader ? Math.max(0, target.row - 1) : target.row;
+        el.scrollTop = offset * rowHeight;
+      }
     }
   }
 
@@ -369,6 +397,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
             <div
               key={c}
               onMouseDown={(e) => {
+                e.preventDefault();
                 if (e.shiftKey && selStart) {
                   setSelEnd({ row: rowCount - 1, col: c });
                 } else {
@@ -459,6 +488,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
               {showGridChrome && (
                 <div
                   onMouseDown={(e) => {
+                    e.preventDefault();
                     if (e.shiftKey && selStart) {
                       setSelEnd({ row: rowIndex, col: colCount - 1 });
                     } else {

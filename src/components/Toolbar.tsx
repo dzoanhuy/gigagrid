@@ -24,7 +24,14 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   ref,
 ) {
   const [query, setQuery] = useState("");
-  const [cursor, setCursor] = useState<{ row: number; col: number }>({ row: 0, col: -1 });
+  // col:0, not -1 — `fromCol` deserializes into a Rust `usize` on the
+  // backend, which rejects a negative number outright (the whole `invoke`
+  // call fails silently since nothing here used to .catch() it — count
+  // still updated via the separate, unrelated `count_matches` call, so the
+  // box looked like "found 1 but never jumped to it"). find_next/find_prev
+  // both have a same-row fallback pass that still catches a match sitting
+  // exactly at column 0, so starting from col 0 loses nothing.
+  const [cursor, setCursor] = useState<{ row: number; col: number }>({ row: 0, col: 0 });
   const [totalMatches, setTotalMatches] = useState<number | null>(null);
   const [matchOrdinal, setMatchOrdinal] = useState(0);
   const [gotoRow, setGotoRow] = useState("");
@@ -58,25 +65,32 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
       fromRow: from.row,
       fromCol: from.col,
       direction,
-    }).then((hit) => {
-      if (!hit) {
-        if (isInitial) setMatchOrdinal(0);
-        return;
-      }
-      const [row, col] = hit;
-      setCursor({ row, col });
-      if (isInitial) {
-        setMatchOrdinal(1);
-      } else {
-        setMatchOrdinal((prev) => {
-          const total = totalMatchesRef.current;
-          if (!total) return prev;
-          const next = direction === "next" ? prev + 1 : prev - 1;
-          return ((next - 1 + total) % total) + 1;
-        });
-      }
-      onNavigate(row, col);
-    });
+    })
+      .then((hit) => {
+        if (!hit) {
+          if (isInitial) setMatchOrdinal(0);
+          return;
+        }
+        const [row, col] = hit;
+        setCursor({ row, col });
+        if (isInitial) {
+          setMatchOrdinal(1);
+        } else {
+          setMatchOrdinal((prev) => {
+            const total = totalMatchesRef.current;
+            if (!total) return prev;
+            const next = direction === "next" ? prev + 1 : prev - 1;
+            return ((next - 1 + total) % total) + 1;
+          });
+        }
+        onNavigate(row, col);
+      })
+      .catch((err) => {
+        // An invoke rejection here used to fail SILENTLY (count still
+        // updated via the separate count_matches call, cursor/selection
+        // just never moved) — surface it instead of swallowing it.
+        console.error("search failed:", err);
+      });
   }
 
   useEffect(() => {
@@ -88,7 +102,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
       invoke<number>("count_matches", { query }).then(setTotalMatches);
-      runSearch(query, { row: 0, col: -1 }, "next", true);
+      runSearch(query, { row: 0, col: 0 }, "next", true);
     }, SEARCH_DEBOUNCE_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
