@@ -143,6 +143,7 @@ function App() {
             showGridChrome={settings.showGridChrome}
             freezeHeader={settings.freezeHeader}
             onStatsChange={setStats}
+            onError={setError}
           />
         )}
       </div>

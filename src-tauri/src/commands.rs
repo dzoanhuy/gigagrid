@@ -327,4 +327,52 @@ mod tests {
 
         std::fs::remove_file(&path).ok();
     }
+
+    /// Reproduces the user's report: copying a ~200k-row x 27-col selection
+    /// came back with entire rows blank. Not `#[ignore]` — this must run
+    /// every `cargo test`, it's exactly the scale that broke.
+    #[test]
+    fn get_rows_handles_a_200k_row_27_col_selection_with_no_blank_rows() {
+        let path = write_temp("get_rows_huge", "");
+        {
+            let mut f = File::create(&path).unwrap();
+            let mut writer = std::io::BufWriter::new(&mut f);
+            for r in 0..200_000usize {
+                let mut line = String::with_capacity(27 * 8);
+                for c in 0..27usize {
+                    if c > 0 {
+                        line.push(',');
+                    }
+                    line.push_str(&format!("r{r}c{c}"));
+                }
+                line.push('\n');
+                writer.write_all(line.as_bytes()).unwrap();
+            }
+        }
+
+        let index = CsvIndex::build(&path).unwrap();
+        assert_eq!(index.row_count(), 200_000);
+        let open_file = OpenFile {
+            path: path.clone(),
+            index,
+            overlay: Overlay::new(),
+            view: None,
+            sort_col: None,
+            filter: None,
+        };
+
+        let t0 = std::time::Instant::now();
+        let rows = get_rows_impl(&open_file, 0, 200_000).unwrap();
+        let elapsed = t0.elapsed();
+        println!("get_rows_impl(0, 200_000) took {:?}", elapsed);
+
+        assert_eq!(rows.len(), 200_000, "wrong row count returned");
+        for (r, row) in rows.iter().enumerate() {
+            assert_eq!(row.len(), 27, "row {r} has {} cols, expected 27", row.len());
+            assert_eq!(row[0], format!("r{r}c0"), "row {r} col 0 mismatch");
+            assert_eq!(row[26], format!("r{r}c26"), "row {r} col 26 mismatch");
+        }
+
+        std::fs::remove_file(&path).ok();
+    }
 }

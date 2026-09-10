@@ -12,6 +12,7 @@ const HEADER_HEIGHT = ROW_HEIGHT;
 const MIN_ROW_HEIGHT = 18;
 const MIN_COL_WIDTH = 40;
 const DEFAULT_COL_WIDTH = 100;
+const COPY_CHUNK_ROWS = 5000;
 
 export interface VisibleRange {
   start: number;
@@ -40,11 +41,36 @@ export function computeWindow(
   return { start, count: Math.max(0, end - start) };
 }
 
+/**
+ * Fetches `count` rows starting at `start` via `fetchChunk`, split into
+ * `chunkSize`-sized round trips instead of one big call — a selection of
+ * hundreds of thousands of rows fetched in a single `get_rows` invoke means
+ * a single Tauri IPC response tens of MB wide, which is exactly the kind of
+ * payload the IPC transport can choke on (rows silently coming back blank
+ * rather than a clean error). No IPC, no state — unit-testable in isolation
+ * against a fake `fetchChunk`, same pattern as `computeWindow`.
+ */
+export async function fetchRowsInChunks(
+  start: number,
+  count: number,
+  chunkSize: number,
+  fetchChunk: (chunkStart: number, chunkCount: number) => Promise<string[][]>,
+): Promise<string[][]> {
+  const allRows: string[][] = [];
+  for (let offset = 0; offset < count; offset += chunkSize) {
+    const chunkCount = Math.min(chunkSize, count - offset);
+    const chunk = await fetchChunk(start + offset, chunkCount);
+    allRows.push(...chunk);
+  }
+  return allRows;
+}
+
 interface GridProps {
   rowCount: number;
   showGridChrome: boolean;
   freezeHeader: boolean;
   onStatsChange?: (stats: GridStats) => void;
+  onError?: (message: string | null) => void;
 }
 
 export interface GridHandle {
@@ -58,7 +84,7 @@ interface CellPos {
   col: number;
 }
 
-export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, showGridChrome, freezeHeader, onStatsChange }, ref) {
+export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, showGridChrome, freezeHeader, onStatsChange, onError }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -271,51 +297,68 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
   async function copySelection() {
     const b = selectionBounds();
     if (!b) return;
-    // Never read from `rowsByIndex` here — it only holds whatever the
-    // virtualized viewport has scrolled through, which for a selection that
-    // spans far beyond the visible window (e.g. shift-click row 1 -> row
-    // 10000) is nearly all of it: most rows would silently copy as empty.
-    // Fetch the exact selected range fresh from the backend instead (this
-    // also merges the overlay, same as every other read path).
-    const count = b.rowMax - b.rowMin + 1;
-    const rows = await invoke<string[][]>("get_rows", { start: b.rowMin, count });
-    const lines: string[] = [];
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      const cells: string[] = [];
-      for (let c = b.colMin; c <= b.colMax; c++) {
-        cells.push(row?.[c] ?? "");
+    try {
+      // Never read from `rowsByIndex` here — it only holds whatever the
+      // virtualized viewport has scrolled through, which for a selection
+      // that spans far beyond the visible window is nearly all of it: most
+      // rows would silently copy as empty. Fetch fresh from the backend
+      // instead (this also merges the overlay, same as every other read
+      // path), chunked (see fetchRowsInChunks).
+      const totalRows = b.rowMax - b.rowMin + 1;
+      const allRows = await fetchRowsInChunks(b.rowMin, totalRows, COPY_CHUNK_ROWS, (s, c) =>
+        invoke<string[][]>("get_rows", { start: s, count: c }),
+      );
+      const lines: string[] = [];
+      for (const row of allRows) {
+        const cells: string[] = [];
+        for (let c = b.colMin; c <= b.colMax; c++) {
+          cells.push(row?.[c] ?? "");
+        }
+        lines.push(cells.join("\t"));
       }
-      lines.push(cells.join("\t"));
+      await navigator.clipboard.writeText(lines.join("\n"));
+      onError?.(null);
+    } catch (err) {
+      onError?.(`Copy failed: ${err}`);
     }
-    await navigator.clipboard.writeText(lines.join("\n"));
   }
 
   async function pasteSelection() {
     const b = selectionBounds();
     if (!b) return;
-    const text = await navigator.clipboard.readText();
-    const grid = text.replace(/\r/g, "").split("\n").map((line) => line.split("\t"));
-    const edits: [number, number, string][] = [];
-    grid.forEach((line, ri) => {
-      line.forEach((value, ci) => {
-        edits.push([b.rowMin + ri, b.colMin + ci, value]);
+    try {
+      const text = await navigator.clipboard.readText();
+      const grid = text.replace(/\r/g, "").split("\n").map((line) => line.split("\t"));
+      const edits: [number, number, string][] = [];
+      grid.forEach((line, ri) => {
+        line.forEach((value, ci) => {
+          edits.push([b.rowMin + ri, b.colMin + ci, value]);
+        });
       });
-    });
-    if (edits.length === 0) return;
-    await invoke("set_cells_batch", { edits });
-    setRowsByIndex((prev) => {
-      const next = new Map(prev);
-      for (const [r, c, v] of edits) {
-        const row = next.get(r);
-        if (row) {
-          const updated = [...row];
-          updated[c] = v;
-          next.set(r, updated);
-        }
+      if (edits.length === 0) return;
+      // Same reasoning as copySelection: a paste of hundreds of thousands
+      // of cells in one set_cells_batch call is a single huge IPC payload
+      // — chunk it so no single round trip is unreasonably large.
+      for (let offset = 0; offset < edits.length; offset += COPY_CHUNK_ROWS) {
+        const batch = edits.slice(offset, offset + COPY_CHUNK_ROWS);
+        await invoke("set_cells_batch", { edits: batch });
       }
-      return next;
-    });
+      setRowsByIndex((prev) => {
+        const next = new Map(prev);
+        for (const [r, c, v] of edits) {
+          const row = next.get(r);
+          if (row) {
+            const updated = [...row];
+            updated[c] = v;
+            next.set(r, updated);
+          }
+        }
+        return next;
+      });
+      onError?.(null);
+    } catch (err) {
+      onError?.(`Paste failed: ${err}`);
+    }
   }
 
   async function handleKeyDown(e: React.KeyboardEvent) {
