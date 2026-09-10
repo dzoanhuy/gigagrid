@@ -482,6 +482,46 @@ async function main() {
     console.log("Selection after Cmd+Shift+ArrowUp from row 4:", selectionAfterExtend, "(expect 5 x 5 = rows 0-4, all cols)");
     await page.screenshot({ path: path.join(OUT_DIR, "shift-extend-to-top.png") });
 
+    // --- Check 11: header/frozen-row bar background covers the FULL
+    // scrollable width, not just the viewport — resize a column wide enough
+    // to force horizontal scroll, scroll all the way right, and compare the
+    // bar's own rendered width against the container's scrollWidth.
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 0;
+      document.querySelector("[data-gigagrid-scroll]").scrollLeft = 0;
+    });
+    await page.waitForTimeout(200);
+    // drag the last column's resize handle out to force horizontal overflow
+    const headerBarBox = await page.$('[data-gigagrid-scroll] > div:first-child');
+    const lastColHandle = await page.$('[data-gigagrid-scroll] > div:first-child > div:last-child > div');
+    const handleBox = await lastColHandle.boundingBox();
+    await page.mouse.move(handleBox.x + 2, handleBox.y + 2);
+    await page.mouse.down();
+    await page.mouse.move(handleBox.x + 600, handleBox.y + 2);
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    await page.evaluate(() => {
+      const el = document.querySelector("[data-gigagrid-scroll]");
+      el.scrollLeft = el.scrollWidth;
+    });
+    await page.waitForTimeout(200);
+    const barCoverage = await page.evaluate(() => {
+      const scrollEl = document.querySelector("[data-gigagrid-scroll]");
+      const headerBar = scrollEl.children[0];
+      const frozenBar = scrollEl.children[1];
+      return {
+        scrollWidth: scrollEl.scrollWidth,
+        headerBarWidth: headerBar.getBoundingClientRect().width,
+        frozenBarWidth: frozenBar ? frozenBar.getBoundingClientRect().width : null,
+      };
+    });
+    console.log(
+      "Header bar width vs full scroll width:",
+      barCoverage,
+      barCoverage.headerBarWidth >= barCoverage.scrollWidth - 1 ? "COVERS FULL WIDTH (fixed)" : "GAP STILL PRESENT (bug)",
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, "header-bg-scrolled-right.png") });
+
     await browser.close();
   } finally {
     vite.kill();
