@@ -10,20 +10,26 @@ use std::fs::File;
 /// around loop never revisits, since it starts back at `from_row` only via
 /// `offset == 0`, at `from_col + 1`) so a lone match keeps re-selecting
 /// itself on repeated "next" instead of vanishing.
+///
+/// All coordinates are LOGICAL (post insert/delete row/col) — reads go
+/// through `overlay.read_logical_row`, same as every other read path, so a
+/// match inside an inserted row/column or an edited cell is found exactly
+/// like one in untouched original data.
 pub fn find_next(
+    overlay: &Overlay,
     index: &CsvIndex,
     file: &mut File,
     query: &str,
     from_row: usize,
     from_col: usize,
 ) -> Option<(usize, usize)> {
-    let row_count = index.row_count();
+    let row_count = overlay.row_count();
     if row_count == 0 || query.is_empty() {
         return None;
     }
     for offset in 0..row_count {
         let r = (from_row + offset) % row_count;
-        if let Ok(row) = index.read_row(file, r) {
+        if let Ok(row) = overlay.read_logical_row(index, file, r) {
             let start_col = if offset == 0 { from_col + 1 } else { 0 };
             for (c, cell) in row.iter().enumerate().skip(start_col) {
                 if cell.contains(query) {
@@ -32,7 +38,7 @@ pub fn find_next(
             }
         }
     }
-    if let Ok(row) = index.read_row(file, from_row) {
+    if let Ok(row) = overlay.read_logical_row(index, file, from_row) {
         for (c, cell) in row.iter().enumerate() {
             if c > from_col {
                 break;
@@ -48,19 +54,20 @@ pub fn find_next(
 /// Mirror of `find_next`, scanning backward from BEFORE `(from_row,
 /// from_col)`.
 pub fn find_prev(
+    overlay: &Overlay,
     index: &CsvIndex,
     file: &mut File,
     query: &str,
     from_row: usize,
     from_col: usize,
 ) -> Option<(usize, usize)> {
-    let row_count = index.row_count();
+    let row_count = overlay.row_count();
     if row_count == 0 || query.is_empty() {
         return None;
     }
     for offset in 0..row_count {
         let r = (from_row + row_count - offset) % row_count;
-        if let Ok(row) = index.read_row(file, r) {
+        if let Ok(row) = overlay.read_logical_row(index, file, r) {
             let upper = if offset == 0 { from_col } else { row.len() };
             for c in (0..upper.min(row.len())).rev() {
                 if row[c].contains(query) {
@@ -69,7 +76,7 @@ pub fn find_prev(
             }
         }
     }
-    if let Ok(row) = index.read_row(file, from_row) {
+    if let Ok(row) = overlay.read_logical_row(index, file, from_row) {
         for c in (from_col..row.len()).rev() {
             if row[c].contains(query) {
                 return Some((from_row, c));
@@ -82,14 +89,14 @@ pub fn find_prev(
 /// Full scan counting every matching CELL (not row) across the whole
 /// file — same order of cost as one `find_next` sweep, run once per query
 /// change (debounced on the frontend), not on every fetch.
-pub fn count_matches(index: &CsvIndex, file: &mut File, query: &str) -> usize {
-    let row_count = index.row_count();
+pub fn count_matches(overlay: &Overlay, index: &CsvIndex, file: &mut File, query: &str) -> usize {
+    let row_count = overlay.row_count();
     if row_count == 0 || query.is_empty() {
         return 0;
     }
     let mut count = 0;
     for r in 0..row_count {
-        if let Ok(row) = index.read_row(file, r) {
+        if let Ok(row) = overlay.read_logical_row(index, file, r) {
             count += row.iter().filter(|cell| cell.contains(query)).count();
         }
     }
@@ -98,15 +105,13 @@ pub fn count_matches(index: &CsvIndex, file: &mut File, query: &str) -> usize {
 
 /// Computes every cell edit needed to replace ALL occurrences of `query`
 /// with `replacement` in every cell that contains it, across the WHOLE
-/// file — same "read through the overlay first" rule as every other read
-/// path (a cell already edited gets replaced against its CURRENT value,
-/// not the stale raw one). Doesn't mutate anything; the caller applies the
-/// result via `Overlay::set_many` so the whole replace-all lands in ONE
-/// undo group, same as a paste.
+/// file (logical coordinates). Doesn't mutate anything; the caller applies
+/// the result via `Overlay::set_many` so the whole replace-all lands in
+/// ONE undo group, same as a paste.
 pub fn compute_replace_all(
+    overlay: &Overlay,
     index: &CsvIndex,
     file: &mut File,
-    overlay: &Overlay,
     query: &str,
     replacement: &str,
 ) -> Vec<(usize, usize, String)> {
@@ -114,13 +119,12 @@ pub fn compute_replace_all(
     if query.is_empty() {
         return edits;
     }
-    let row_count = index.row_count();
+    let row_count = overlay.row_count();
     for r in 0..row_count {
-        if let Ok(row) = index.read_row(file, r) {
-            for c in 0..row.len() {
-                let current = overlay.get(r, c).cloned().unwrap_or_else(|| row[c].clone());
-                if current.contains(query) {
-                    edits.push((r, c, current.replace(query, replacement)));
+        if let Ok(row) = overlay.read_logical_row(index, file, r) {
+            for (c, cell) in row.iter().enumerate() {
+                if cell.contains(query) {
+                    edits.push((r, c, cell.replace(query, replacement)));
                 }
             }
         }
@@ -128,14 +132,14 @@ pub fn compute_replace_all(
     edits
 }
 
-/// Same replace, scoped to a single cell — used by "Replace" (as opposed to
-/// "Replace All") on whatever cell the search cursor currently sits on.
-/// Returns `None` if the cell doesn't actually contain `query` (nothing to
-/// do) so the caller doesn't push a no-op undo entry.
+/// Same replace, scoped to a single LOGICAL cell — used by "Replace" (as
+/// opposed to "Replace All") on whatever cell the search cursor currently
+/// sits on. Returns `None` if the cell doesn't actually contain `query`
+/// (nothing to do) so the caller doesn't push a no-op undo entry.
 pub fn compute_replace_cell(
+    overlay: &Overlay,
     index: &CsvIndex,
     file: &mut File,
-    overlay: &Overlay,
     row: usize,
     col: usize,
     query: &str,
@@ -144,41 +148,34 @@ pub fn compute_replace_cell(
     if query.is_empty() {
         return None;
     }
-    let raw = index.read_row(file, row).ok()?.get(col)?.clone();
-    let current = overlay.get(row, col).cloned().unwrap_or(raw);
+    let current = overlay.read_logical_row(index, file, row).ok()?.get(col)?.clone();
     if !current.contains(query) {
         return None;
     }
     Some(current.replace(query, replacement))
 }
 
-/// Returns ORIGINAL row indices in the desired display order/subset — a
-/// permutation (or filtered subset), never a data copy. Values are read
-/// through the overlay merge, so an edited cell is what gets sorted/
-/// filtered on, not the stale raw value. (Signature takes `file: &mut
-/// File` in addition to the plan's listed params — reading row contents
-/// to sort/filter needs it, same as find_next/find_prev above.)
+/// Returns LOGICAL row indices in the desired display order/subset — a
+/// permutation (or filtered subset) of `0..overlay.row_count()`, never a
+/// data copy. Reads go through `overlay.read_logical_row` (same as every
+/// other path), so an edited cell, an inserted row, or an inserted column
+/// is what gets sorted/filtered on, not stale/missing data.
 pub fn sorted_filtered_view(
+    overlay: &Overlay,
     index: &CsvIndex,
     file: &mut File,
-    overlay: &Overlay,
     sort_col: Option<usize>,
     filter: Option<&str>,
 ) -> Vec<usize> {
-    let row_count = index.row_count();
+    let row_count = overlay.row_count();
     let mut rows: Vec<usize> = (0..row_count).collect();
 
     if let Some(needle) = filter {
         if !needle.is_empty() {
             rows.retain(|&r| {
-                index
-                    .read_row(file, r)
-                    .map(|row| {
-                        row.iter().enumerate().any(|(c, cell)| {
-                            let value = overlay.get(r, c).cloned().unwrap_or_else(|| cell.clone());
-                            value.contains(needle)
-                        })
-                    })
+                overlay
+                    .read_logical_row(index, file, r)
+                    .map(|row| row.iter().any(|cell| cell.contains(needle)))
                     .unwrap_or(false)
             });
         }
@@ -188,12 +185,11 @@ pub fn sorted_filtered_view(
         let mut keyed: Vec<(usize, String)> = rows
             .into_iter()
             .map(|r| {
-                let raw = index
-                    .read_row(file, r)
+                let value = overlay
+                    .read_logical_row(index, file, r)
                     .ok()
                     .and_then(|row| row.get(col).cloned())
                     .unwrap_or_default();
-                let value = overlay.get(r, col).cloned().unwrap_or(raw);
                 (r, value)
             })
             .collect();
@@ -217,13 +213,18 @@ mod tests {
         path
     }
 
+    fn overlay_for(row_count: usize, col_count: usize) -> Overlay {
+        Overlay::new(row_count, col_count)
+    }
+
     #[test]
     fn find_next_wraps_around() {
         let path = write_temp("find_next_wrap", "a,b\nc,needle\ne,f\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
+        let overlay = overlay_for(3, 2);
         // start search from the last row -> should wrap and find row 1, col 1
-        assert_eq!(find_next(&index, &mut file, "needle", 2, 0), Some((1, 1)));
+        assert_eq!(find_next(&overlay, &index, &mut file, "needle", 2, 0), Some((1, 1)));
         std::fs::remove_file(&path).ok();
     }
 
@@ -232,9 +233,10 @@ mod tests {
         let path = write_temp("find_next_same_row", "needle,needle,x\na,b,c\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
+        let overlay = overlay_for(2, 3);
         // anchored at (0,0) (the first match) -> next should be (0,1), the
         // SECOND match in the same row, not skip ahead to another row
-        assert_eq!(find_next(&index, &mut file, "needle", 0, 0), Some((0, 1)));
+        assert_eq!(find_next(&overlay, &index, &mut file, "needle", 0, 0), Some((0, 1)));
         std::fs::remove_file(&path).ok();
     }
 
@@ -243,9 +245,10 @@ mod tests {
         let path = write_temp("find_next_lone", "a,needle\nc,d\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
+        let overlay = overlay_for(2, 2);
         // anchored exactly ON the only match -> pressing "next" again wraps
         // all the way around and must land back on it, not return None
-        assert_eq!(find_next(&index, &mut file, "needle", 0, 1), Some((0, 1)));
+        assert_eq!(find_next(&overlay, &index, &mut file, "needle", 0, 1), Some((0, 1)));
         std::fs::remove_file(&path).ok();
     }
 
@@ -254,8 +257,9 @@ mod tests {
         let path = write_temp("find_prev_wrap", "needle,b\nc,d\ne,f\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
+        let overlay = overlay_for(3, 2);
         // start search from row 0 backward -> should wrap and find row 0 itself
-        assert_eq!(find_prev(&index, &mut file, "needle", 0, 0), Some((0, 0)));
+        assert_eq!(find_prev(&overlay, &index, &mut file, "needle", 0, 0), Some((0, 0)));
         std::fs::remove_file(&path).ok();
     }
 
@@ -264,7 +268,20 @@ mod tests {
         let path = write_temp("no_match", "a,b\nc,d\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        assert_eq!(find_next(&index, &mut file, "zzz", 0, 0), None);
+        let overlay = overlay_for(2, 2);
+        assert_eq!(find_next(&overlay, &index, &mut file, "zzz", 0, 0), None);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn find_next_sees_inserted_row() {
+        let path = write_temp("find_next_inserted_row", "a,b\nc,d\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        let mut overlay = overlay_for(2, 2);
+        overlay.insert_row(1);
+        overlay.set(1, 0, "needle".to_string());
+        assert_eq!(find_next(&overlay, &index, &mut file, "needle", 0, 0), Some((1, 0)));
         std::fs::remove_file(&path).ok();
     }
 
@@ -273,7 +290,8 @@ mod tests {
         let path = write_temp("count_matches", "needle,x\nneedle,needle\ny,z\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        assert_eq!(count_matches(&index, &mut file, "needle"), 3);
+        let overlay = overlay_for(3, 2);
+        assert_eq!(count_matches(&overlay, &index, &mut file, "needle"), 3);
         std::fs::remove_file(&path).ok();
     }
 
@@ -282,7 +300,8 @@ mod tests {
         let path = write_temp("count_matches_empty", "a,b\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        assert_eq!(count_matches(&index, &mut file, ""), 0);
+        let overlay = overlay_for(1, 2);
+        assert_eq!(count_matches(&overlay, &index, &mut file, ""), 0);
         std::fs::remove_file(&path).ok();
     }
 
@@ -291,8 +310,8 @@ mod tests {
         let path = write_temp("replace_all", "foo,x\nbarfoo,foobar\ny,z\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        let overlay = Overlay::new();
-        let mut edits = compute_replace_all(&index, &mut file, &overlay, "foo", "QUX");
+        let overlay = overlay_for(3, 2);
+        let mut edits = compute_replace_all(&overlay, &index, &mut file, "foo", "QUX");
         edits.sort();
         assert_eq!(
             edits,
@@ -310,9 +329,9 @@ mod tests {
         let path = write_temp("replace_all_overlay", "raw,x\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        let mut overlay = Overlay::new();
+        let mut overlay = overlay_for(1, 2);
         overlay.set(0, 0, "editedfoo".to_string());
-        let edits = compute_replace_all(&index, &mut file, &overlay, "foo", "bar");
+        let edits = compute_replace_all(&overlay, &index, &mut file, "foo", "bar");
         assert_eq!(edits, vec![(0, 0, "editedbar".to_string())]);
         std::fs::remove_file(&path).ok();
     }
@@ -322,8 +341,8 @@ mod tests {
         let path = write_temp("replace_all_empty", "a,b\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        let overlay = Overlay::new();
-        assert_eq!(compute_replace_all(&index, &mut file, &overlay, "", "x"), Vec::new());
+        let overlay = overlay_for(1, 2);
+        assert_eq!(compute_replace_all(&overlay, &index, &mut file, "", "x"), Vec::new());
         std::fs::remove_file(&path).ok();
     }
 
@@ -332,8 +351,8 @@ mod tests {
         let path = write_temp("replace_cell", "foofoo,other\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        let overlay = Overlay::new();
-        let result = compute_replace_cell(&index, &mut file, &overlay, 0, 0, "foo", "bar");
+        let overlay = overlay_for(1, 2);
+        let result = compute_replace_cell(&overlay, &index, &mut file, 0, 0, "foo", "bar");
         assert_eq!(result, Some("barbar".to_string()));
         std::fs::remove_file(&path).ok();
     }
@@ -343,8 +362,8 @@ mod tests {
         let path = write_temp("replace_cell_none", "a,b\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        let overlay = Overlay::new();
-        assert_eq!(compute_replace_cell(&index, &mut file, &overlay, 0, 0, "zzz", "y"), None);
+        let overlay = overlay_for(1, 2);
+        assert_eq!(compute_replace_cell(&overlay, &index, &mut file, 0, 0, "zzz", "y"), None);
         std::fs::remove_file(&path).ok();
     }
 
@@ -353,8 +372,8 @@ mod tests {
         let path = write_temp("view_sort", "c,3\na,1\nb,2\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        let overlay = Overlay::new();
-        let view = sorted_filtered_view(&index, &mut file, &overlay, Some(0), None);
+        let overlay = overlay_for(3, 2);
+        let view = sorted_filtered_view(&overlay, &index, &mut file, Some(0), None);
         // original rows: 0="c,3" 1="a,1" 2="b,2" -> sorted by col 0 -> a,b,c -> rows 1,2,0
         assert_eq!(view, vec![1, 2, 0]);
         std::fs::remove_file(&path).ok();
@@ -365,8 +384,8 @@ mod tests {
         let path = write_temp("view_filter", "apple,1\nbanana,2\navocado,3\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        let overlay = Overlay::new();
-        let view = sorted_filtered_view(&index, &mut file, &overlay, None, Some("av"));
+        let overlay = overlay_for(3, 2);
+        let view = sorted_filtered_view(&overlay, &index, &mut file, None, Some("av"));
         assert_eq!(view, vec![2]); // only "avocado" (row 2) contains "av" besides row 0? "apple" has no "av"
         std::fs::remove_file(&path).ok();
     }
@@ -376,9 +395,9 @@ mod tests {
         let path = write_temp("view_overlay", "z,1\ny,2\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        let mut overlay = Overlay::new();
+        let mut overlay = overlay_for(2, 2);
         overlay.set(0, 0, "a".to_string()); // row 0 was "z", now overlay says "a"
-        let view = sorted_filtered_view(&index, &mut file, &overlay, Some(0), None);
+        let view = sorted_filtered_view(&overlay, &index, &mut file, Some(0), None);
         // sorted by overlay-merged col 0: "a" (row 0), "y" (row 1) -> [0, 1]
         assert_eq!(view, vec![0, 1]);
         std::fs::remove_file(&path).ok();

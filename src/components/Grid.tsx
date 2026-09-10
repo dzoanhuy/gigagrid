@@ -73,6 +73,17 @@ interface GridProps {
   onStatsChange?: (stats: GridStats) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onError?: (message: string | null) => void;
+  // Row insert/delete (and undo/redo of either) change the logical row
+  // count out from under `rowCount`, which App.tsx owns — this pushes the
+  // fresh count back up so it doesn't go stale.
+  onRowCountChange?: (rowCount: number) => void;
+}
+
+interface ContextMenuState {
+  x: number;
+  y: number;
+  kind: "row" | "col";
+  index: number;
 }
 
 export interface GridHandle {
@@ -87,7 +98,7 @@ interface CellPos {
   col: number;
 }
 
-export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, onStatsChange, onDirtyChange, onError }, ref) {
+export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, onStatsChange, onDirtyChange, onError, onRowCountChange }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -97,6 +108,17 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
   const [selEnd, setSelEnd] = useState<CellPos | null>(null);
   const [editingCell, setEditingCell] = useState<CellPos | null>(null);
   const [rowHeight, setRowHeight] = useState(ROW_HEIGHT);
+  const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  // Bumped by invalidateCache() and included in both fetch effects' own
+  // dependency arrays below — those arrays deliberately track `range`/
+  // `rowCount`/`freezeHeader` only (see the eslint-disable on each), which
+  // don't necessarily change when the cache is cleared for a reason OTHER
+  // than scrolling/resizing (undo/redo, replace, insert/delete row/col).
+  // Without this, clearing `rowsByIndex` with the viewport otherwise
+  // unchanged left every visible row (and the frozen row 0, breaking
+  // colCount) permanently stuck on the "…" placeholder — nothing was left
+  // to prompt a refetch.
+  const [cacheGeneration, setCacheGeneration] = useState(0);
   // App.tsx passes an inline `(stats) => updateTab(...)` — a new function
   // identity every App render, independent of whether selection/data
   // actually changed. Reading it through a ref (instead of putting it in
@@ -162,6 +184,25 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
     observer.observe(el);
     return () => observer.disconnect();
   }, []);
+
+  useEffect(() => {
+    if (!contextMenu) return;
+    const close = () => setContextMenu(null);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    // "click" (not "mousedown") so the menu's OWN item clicks — which fire
+    // mousedown+click on the same target — aren't immediately closed out
+    // from under themselves before their onClick handler runs.
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
 
   // Shared by the imperative handle (goto/search) and keyboard navigation
   // (arrow keys) — every caller that moves the cursor/selection needs the
@@ -267,7 +308,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
       );
     }, FETCH_DEBOUNCE_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [range.start, range.count, freezeHeader]);
+  }, [range.start, range.count, freezeHeader, cacheGeneration]);
 
   useEffect(() => {
     if (!freezeHeader || rowCount === 0) return;
@@ -276,7 +317,8 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
       if (!rows[0]) return;
       setRowsByIndex((prev) => new Map(prev).set(0, rows[0]));
     });
-  }, [freezeHeader, rowCount]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freezeHeader, rowCount, cacheGeneration]);
 
   function commitCell(rowIndex: number, colIndex: number, value: string) {
     invoke("set_cell", { tabId, row: rowIndex, col: colIndex, value }).then(() => {
@@ -370,6 +412,52 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
   // rather than trying to patch the cache with exactly what changed.
   function invalidateCache() {
     setRowsByIndex(new Map());
+    setCacheGeneration((g) => g + 1);
+  }
+
+  // Deleting/inserting rows can leave the current selection pointing past
+  // the new end of the file (e.g. selecting the last row, then deleting
+  // it) — clamp rather than leave a selection that renders nothing.
+  function clampSelectionToRowCount(newRowCount: number) {
+    if (newRowCount === 0) {
+      setSelStart(null);
+      setSelEnd(null);
+      return;
+    }
+    const clamp = (p: CellPos | null) => (p && p.row >= newRowCount ? { ...p, row: newRowCount - 1 } : p);
+    setSelStart((p) => clamp(p));
+    setSelEnd((p) => clamp(p));
+  }
+
+  async function insertRow(at: number) {
+    setContextMenu(null);
+    const newCount = await invoke<number>("insert_row", { at, tabId });
+    invalidateCache();
+    onRowCountChange?.(newCount);
+    onDirtyChange?.(true);
+  }
+
+  async function deleteRow(at: number) {
+    setContextMenu(null);
+    const newCount = await invoke<number>("delete_row", { at, tabId });
+    invalidateCache();
+    onRowCountChange?.(newCount);
+    clampSelectionToRowCount(newCount);
+    onDirtyChange?.(true);
+  }
+
+  async function insertCol(at: number) {
+    setContextMenu(null);
+    await invoke("insert_col", { at, tabId });
+    invalidateCache();
+    onDirtyChange?.(true);
+  }
+
+  async function deleteCol(at: number) {
+    setContextMenu(null);
+    await invoke("delete_col", { at, tabId });
+    invalidateCache();
+    onDirtyChange?.(true);
   }
 
   function copySelection() {
@@ -526,12 +614,16 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
       await pasteSelection();
     } else if (e.key === "z" && e.shiftKey) {
       e.preventDefault();
-      await invoke("redo", { tabId });
+      const [, newRowCount] = await invoke<[boolean, number]>("redo", { tabId });
       invalidateCache();
+      onRowCountChange?.(newRowCount);
+      clampSelectionToRowCount(newRowCount);
     } else if (e.key === "z") {
       e.preventDefault();
-      await invoke("undo", { tabId });
+      const [, newRowCount] = await invoke<[boolean, number]>("undo", { tabId });
       invalidateCache();
+      onRowCountChange?.(newRowCount);
+      clampSelectionToRowCount(newRowCount);
     } else if (e.key === "a") {
       e.preventDefault();
       setSelStart({ row: 0, col: 0 });
@@ -591,6 +683,10 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                   setSelEnd({ row: rowCount - 1, col: c });
                 }
                 containerRef.current?.focus();
+              }}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setContextMenu({ x: e.clientX, y: e.clientY, kind: "col", index: c });
               }}
               style={{
                 position: "relative",
@@ -686,6 +782,10 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                     }
                     containerRef.current?.focus();
                   }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({ x: e.clientX, y: e.clientY, kind: "row", index: rowIndex });
+                  }}
                   style={{
                     position: "sticky",
                     left: 0,
@@ -749,6 +849,38 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
           );
         })}
       </div>
+      {contextMenu && (
+        <div
+          style={{
+            position: "fixed",
+            top: contextMenu.y,
+            left: contextMenu.x,
+            zIndex: 20,
+            background: "var(--bg)",
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+            padding: 4,
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 160,
+          }}
+        >
+          {contextMenu.kind === "row" ? (
+            <>
+              <button onClick={() => insertRow(contextMenu.index)}>Insert row above</button>
+              <button onClick={() => insertRow(contextMenu.index + 1)}>Insert row below</button>
+              <button onClick={() => deleteRow(contextMenu.index)}>Delete row</button>
+            </>
+          ) : (
+            <>
+              <button onClick={() => insertCol(contextMenu.index)}>Insert column left</button>
+              <button onClick={() => insertCol(contextMenu.index + 1)}>Insert column right</button>
+              <button onClick={() => deleteCol(contextMenu.index)}>Delete column</button>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 });

@@ -344,6 +344,7 @@ function App() {
                 onStatsChange={(stats) => updateTab(tab.meta.tab_id, { stats })}
                 onDirtyChange={(dirty) => updateTab(tab.meta.tab_id, { dirty })}
                 onError={(message) => updateTab(tab.meta.tab_id, { error: message })}
+                onRowCountChange={(row_count) => updateTab(tab.meta.tab_id, { meta: { ...tab.meta, row_count } })}
               />
             </div>
             <StatusBar file={tab.meta} stats={tab.stats} />

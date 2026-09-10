@@ -4,10 +4,10 @@ use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 
-/// Streams `src` in ORIGINAL row order (via `index`/`read_row` — never
-/// through any active sort/filter view/permutation), merging `overlay` by
-/// original (row, col) coordinate, writing each row to `dst`. Never builds
-/// the whole output in memory — save speed is explicitly the lowest
+/// Streams the CURRENT logical row order (via `overlay.read_logical_row` —
+/// never through any active sort/filter view/permutation, and reflecting
+/// every inserted/deleted row/column), writing each row to `dst`. Never
+/// builds the whole output in memory — save speed is explicitly the lowest
 /// priority (see plan.md), but correctness of WHICH row an edit lands on
 /// is not negotiable (this phase's Risk).
 pub fn save(index: &CsvIndex, overlay: &Overlay, src: &Path, dst: &Path) -> io::Result<()> {
@@ -16,13 +16,8 @@ pub fn save(index: &CsvIndex, overlay: &Overlay, src: &Path, dst: &Path) -> io::
     let mut writer = BufWriter::new(dst_file);
     let delimiter = index.delimiter();
 
-    for r in 0..index.row_count() {
-        let mut row = index.read_row(&mut src_file, r)?;
-        for (c, cell) in row.iter_mut().enumerate() {
-            if let Some(edited) = overlay.get(r, c) {
-                *cell = edited.clone();
-            }
-        }
+    for r in 0..overlay.row_count() {
+        let row = overlay.read_logical_row(index, &mut src_file, r)?;
         writeln!(writer, "{}", encode_csv_row(&row, delimiter))?;
     }
     writer.flush()
@@ -73,7 +68,7 @@ mod tests {
         let dst = temp_dst("roundtrip");
 
         let index = CsvIndex::build(&src).unwrap();
-        let mut overlay = Overlay::new();
+        let mut overlay = Overlay::new(3, 2);
         overlay.set(1, 0, "EDITED".to_string());
 
         save(&index, &overlay, &src, &dst).unwrap();
@@ -91,7 +86,7 @@ mod tests {
         let dst = temp_dst("quote");
 
         let index = CsvIndex::build(&src).unwrap();
-        let overlay = Overlay::new();
+        let overlay = Overlay::new(2, 2);
         save(&index, &overlay, &src, &dst).unwrap();
 
         // Re-read the SAVED file through our own parser to confirm it round-
@@ -116,7 +111,7 @@ mod tests {
         let dst = temp_dst("order");
 
         let index = CsvIndex::build(&src).unwrap();
-        let overlay = Overlay::new();
+        let overlay = Overlay::new(3, 1);
         save(&index, &overlay, &src, &dst).unwrap();
 
         let saved = std::fs::read_to_string(&dst).unwrap();
@@ -133,13 +128,34 @@ mod tests {
 
         let index = CsvIndex::build(&src).unwrap();
         assert_eq!(index.format_label(), "TSV");
-        let mut overlay = Overlay::new();
+        let mut overlay = Overlay::new(2, 2);
         overlay.set(1, 0, "EDITED".to_string());
 
         save(&index, &overlay, &src, &dst).unwrap();
 
         let saved = std::fs::read_to_string(&dst).unwrap();
         assert_eq!(saved, "a\tb\nEDITED\t2\n");
+
+        std::fs::remove_file(&src).ok();
+        std::fs::remove_file(&dst).ok();
+    }
+
+    #[test]
+    fn save_reflects_inserted_and_deleted_rows_and_columns() {
+        let src = write_temp("structural_src", "a,b,c\nd,e,f\ng,h,i\n");
+        let dst = temp_dst("structural");
+
+        let index = CsvIndex::build(&src).unwrap();
+        let mut overlay = Overlay::new(3, 3);
+        overlay.delete_row(1).unwrap(); // remove "d,e,f"
+        overlay.insert_row(2); // append a new blank row at the end
+        overlay.set(2, 0, "NEW".to_string());
+        overlay.delete_col(1).unwrap(); // remove column "b"/"h"/(new row's blank)
+
+        save(&index, &overlay, &src, &dst).unwrap();
+
+        let saved = std::fs::read_to_string(&dst).unwrap();
+        assert_eq!(saved, "a,c\ng,i\nNEW,\n");
 
         std::fs::remove_file(&src).ok();
         std::fs::remove_file(&dst).ok();

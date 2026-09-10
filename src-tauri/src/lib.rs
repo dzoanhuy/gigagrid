@@ -43,6 +43,10 @@ pub fn run() {
             commands::set_sort,
             commands::set_filter,
             commands::clear_view,
+            commands::insert_row,
+            commands::delete_row,
+            commands::insert_col,
+            commands::delete_col,
             commands::save_file,
             commands::close_tab,
             commands::take_pending_open

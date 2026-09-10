@@ -59,13 +59,26 @@ pub fn open_file(path: String, state: State<AppState>) -> Result<FileMeta, Strin
     let format = index.format_label().to_string();
     let encoding = index.encoding_label().to_string();
     let line_ending = index.line_ending_label().to_string();
+    // Column count for the insert/delete-column layer: read row 0's own
+    // field count as the file's "canonical" width. A ragged file (rows with
+    // differing field counts — tolerated everywhere else, see get_rows_impl)
+    // still opens fine; inserting/deleting a column just operates on this
+    // row-0-derived baseline rather than per-row widths, a known,
+    // documented simplification rather than an attempt to handle every
+    // ragged-file edge case here.
+    let col_count = if row_count > 0 {
+        let mut probe_file = File::open(&p).map_err(|e| e.to_string())?;
+        index.read_row(&mut probe_file, 0).map_err(|e| e.to_string())?.len()
+    } else {
+        0
+    };
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     let tab_id = guard.next_id;
     guard.next_id += 1;
     guard.files.insert(tab_id, OpenFile {
         path: p,
         index,
-        overlay: Overlay::new(),
+        overlay: Overlay::new(row_count, col_count),
         view: None,
         sort_col: None,
         filter: None,
@@ -100,21 +113,16 @@ fn get_rows_impl(
         .view
         .as_ref()
         .map(|v| v.len())
-        .unwrap_or_else(|| open_file.index.row_count());
+        .unwrap_or_else(|| open_file.overlay.row_count());
     let end = (start + count).min(total);
     let mut rows = Vec::with_capacity(end.saturating_sub(start));
     for i in start..end {
-        // remap through the active view (if any) to the ORIGINAL row index
+        // remap through the active view (if any) to the LOGICAL row index
         let r = open_file.view.as_ref().map(|v| v[i]).unwrap_or(i);
-        let mut row = open_file
-            .index
-            .read_row(&mut file, r)
+        let row = open_file
+            .overlay
+            .read_logical_row(&open_file.index, &mut file, r)
             .map_err(|e| e.to_string())?;
-        for (c, cell) in row.iter_mut().enumerate() {
-            if let Some(edited) = open_file.overlay.get(r, c) {
-                *cell = edited.clone();
-            }
-        }
         rows.push(row);
     }
     Ok(rows)
@@ -127,9 +135,9 @@ fn rebuild_view(open_file: &mut OpenFile) -> Result<(), String> {
     }
     let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
     let view = crate::search::sorted_filtered_view(
+        &open_file.overlay,
         &open_file.index,
         &mut file,
-        &open_file.overlay,
         open_file.sort_col,
         open_file.filter.as_deref(),
     );
@@ -204,18 +212,25 @@ pub fn set_cells_batch(
     Ok(())
 }
 
+/// Returns (did anything change, the row count AFTER undoing) — undo can
+/// now revert a structural edit (insert/delete row/col), which changes the
+/// logical row count out from under the frontend's own cached `rowCount`;
+/// it needs this to stay in sync without a separate round trip.
 #[tauri::command]
-pub fn undo(tab_id: TabId, state: State<AppState>) -> Result<bool, String> {
+pub fn undo(tab_id: TabId, state: State<AppState>) -> Result<(bool, usize), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
-    Ok(open_file.overlay.undo())
+    let changed = open_file.overlay.undo();
+    Ok((changed, open_file.overlay.row_count()))
 }
 
+/// Mirror of `undo` — see its doc comment.
 #[tauri::command]
-pub fn redo(tab_id: TabId, state: State<AppState>) -> Result<bool, String> {
+pub fn redo(tab_id: TabId, state: State<AppState>) -> Result<(bool, usize), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
-    Ok(open_file.overlay.redo())
+    let changed = open_file.overlay.redo();
+    Ok((changed, open_file.overlay.row_count()))
 }
 
 #[tauri::command]
@@ -231,9 +246,9 @@ pub fn search(
     let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
     let result = if direction == "prev" {
-        crate::search::find_prev(&open_file.index, &mut file, &query, from_row, from_col)
+        crate::search::find_prev(&open_file.overlay, &open_file.index, &mut file, &query, from_row, from_col)
     } else {
-        crate::search::find_next(&open_file.index, &mut file, &query, from_row, from_col)
+        crate::search::find_next(&open_file.overlay, &open_file.index, &mut file, &query, from_row, from_col)
     };
     Ok(result)
 }
@@ -243,7 +258,7 @@ pub fn count_matches(query: String, tab_id: TabId, state: State<AppState>) -> Re
     let guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
-    Ok(crate::search::count_matches(&open_file.index, &mut file, &query))
+    Ok(crate::search::count_matches(&open_file.overlay, &open_file.index, &mut file, &query))
 }
 
 /// Replace ALL occurrences of `query` across the whole file in one undo
@@ -260,7 +275,7 @@ pub fn replace_all(
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
-    let edits = crate::search::compute_replace_all(&open_file.index, &mut file, &open_file.overlay, &query, &replacement);
+    let edits = crate::search::compute_replace_all(&open_file.overlay, &open_file.index, &mut file, &query, &replacement);
     let count = edits.len();
     if count > 0 {
         open_file.overlay.set_many(edits);
@@ -284,9 +299,9 @@ pub fn replace_cell(
     let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
     let new_value = crate::search::compute_replace_cell(
+        &open_file.overlay,
         &open_file.index,
         &mut file,
-        &open_file.overlay,
         row,
         col,
         &query,
@@ -301,18 +316,63 @@ pub fn replace_cell(
     }
 }
 
-/// Validates `row` against the open file's row count. Column bounds are not
-/// tracked by `CsvIndex` (ragged rows are allowed, see index.rs) — the
-/// frontend already knows the field count of any row it has rendered, so
-/// column-only navigation is handled client-side without an IPC round trip.
+/// Validates `row` against the CURRENT logical row count (reflecting any
+/// inserted/deleted rows). Column bounds are not tracked separately here —
+/// the frontend already knows the field count of any row it has rendered,
+/// so column-only navigation is handled client-side without an IPC round
+/// trip.
 #[tauri::command]
 pub fn goto(row: usize, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
-    let row_count = open_file.index.row_count();
+    let row_count = open_file.overlay.row_count();
     if row >= row_count {
         return Err(format!("row {row} out of range (0..{row_count})"));
     }
+    Ok(())
+}
+
+/// Inserts a brand-new, blank row at logical position `at` (`at ==
+/// row_count()` appends at the end — used for "insert row below" on the
+/// last row, and for "add row" from a toolbar with no row selected).
+/// Returns the new row count so the frontend can update its cached one
+/// without a separate round trip.
+#[tauri::command]
+pub fn insert_row(at: usize, tab_id: TabId, state: State<AppState>) -> Result<usize, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    open_file.overlay.insert_row(at);
+    rebuild_view(open_file)?;
+    Ok(open_file.overlay.row_count())
+}
+
+/// Deletes the row at logical position `at`. Returns the new row count.
+#[tauri::command]
+pub fn delete_row(at: usize, tab_id: TabId, state: State<AppState>) -> Result<usize, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    open_file.overlay.delete_row(at)?;
+    rebuild_view(open_file)?;
+    Ok(open_file.overlay.row_count())
+}
+
+/// Same as `insert_row`, for columns. Doesn't need to report a count back —
+/// the frontend derives its column count from the width of whatever row
+/// data `get_rows` returns, so a cache-invalidate + refetch is enough.
+#[tauri::command]
+pub fn insert_col(at: usize, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    open_file.overlay.insert_col(at);
+    Ok(())
+}
+
+/// Same as `delete_row`, for columns.
+#[tauri::command]
+pub fn delete_col(at: usize, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    open_file.overlay.delete_col(at)?;
     Ok(())
 }
 
@@ -355,7 +415,7 @@ mod tests {
         let open_file = OpenFile {
             path: path.clone(),
             index,
-            overlay: Overlay::new(),
+            overlay: Overlay::new(4, 2),
             view: None,
             sort_col: None,
             filter: None,
@@ -374,7 +434,7 @@ mod tests {
         let open_file = OpenFile {
             path: path.clone(),
             index,
-            overlay: Overlay::new(),
+            overlay: Overlay::new(2, 2),
             view: None,
             sort_col: None,
             filter: None,
@@ -390,7 +450,7 @@ mod tests {
     fn get_rows_prefers_overlay_over_raw_value() {
         let path = write_temp("get_rows_overlay", "a,b\n1,2\n");
         let index = CsvIndex::build(&path).unwrap();
-        let mut overlay = Overlay::new();
+        let mut overlay = Overlay::new(2, 2);
         overlay.set(1, 0, "EDITED".to_string());
         let open_file = OpenFile {
             path: path.clone(),
@@ -416,7 +476,7 @@ mod tests {
         let open_file = OpenFile {
             path: path.clone(),
             index,
-            overlay: Overlay::new(),
+            overlay: Overlay::new(3, 1),
             view: Some(vec![1, 0, 2]), // pretend a sort already reordered to a,b,c
             sort_col: None,
             filter: None,
@@ -455,7 +515,7 @@ mod tests {
         let open_file = OpenFile {
             path: path.clone(),
             index,
-            overlay: Overlay::new(),
+            overlay: Overlay::new(200_000, 27),
             view: None,
             sort_col: None,
             filter: None,

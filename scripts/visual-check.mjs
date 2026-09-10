@@ -125,7 +125,29 @@ window.__TAURI_INTERNALS__ = {
       r[col] = r[col].split(query).join(replacement);
       return true;
     }
-    if (cmd === "undo" || cmd === "redo") return false;
+    if (cmd === "insert_row") {
+      const at = args.at;
+      const width = rows[0] ? rows[0].length : 0;
+      rows.splice(at, 0, Array.from({ length: width }, () => ""));
+      return rows.length;
+    }
+    if (cmd === "delete_row") {
+      rows.splice(args.at, 1);
+      return rows.length;
+    }
+    if (cmd === "insert_col") {
+      for (const row of rows) row.splice(args.at, 0, "");
+      return null;
+    }
+    if (cmd === "delete_col") {
+      for (const row of rows) row.splice(args.at, 1);
+      return null;
+    }
+    // Real backend returns [changed, newRowCount] now (structural undo/redo
+    // changes the row count) — the mock doesn't replay real undo history,
+    // just needs to match that shape so the frontend's destructuring doesn't
+    // throw when a check happens to press Cmd+Z after a structural edit.
+    if (cmd === "undo" || cmd === "redo") return [false, rows.length];
     if (cmd === "save_file") return null;
     if (cmd === "take_pending_open") return null;
     if (cmd === "plugin:event|listen") return 1;
@@ -834,6 +856,102 @@ async function main() {
     });
     console.log("Match count after Replace All (expect 0 / 0 stays until re-search — this reads the last count refresh):", countAfterAll);
     await page.screenshot({ path: path.join(OUT_DIR, "find-and-replace.png") });
+
+    // --- Check 16: right-click row gutter / column header shows a context
+    // menu; Insert/Delete row and column actually change the grid's shape,
+    // reflected both in the StatusBar's row count and in fetched row width.
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 0;
+    });
+    await page.waitForTimeout(200);
+    const rowCountText = async () =>
+      page.evaluate(() => {
+        const spans = Array.from(document.querySelectorAll("span"));
+        const hit = spans.find((s) => /^\d[\d,]* rows$/.test(s.textContent || ""));
+        return hit ? hit.textContent : null;
+      });
+    console.log("Row count before insert (expect 50 rows):", await rowCountText());
+
+    const rowsForMenu = await page.$$(rowSelector);
+    const gutterForMenu = await gutterAt(rowsForMenu, 2);
+    await gutterForMenu.click({ button: "right" });
+    await page.waitForTimeout(150);
+    const rowMenuItems = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("button")).map((b) => b.textContent),
+    );
+    console.log(
+      "Row context menu items (expect to include Insert row above/below, Delete row):",
+      rowMenuItems.filter((t) => /row/i.test(t || "")),
+    );
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Insert row below");
+      btn.click();
+    });
+    await page.waitForTimeout(300);
+    console.log("Row count after 'Insert row below' (expect 51 rows):", await rowCountText());
+
+    const rowsAfterInsert = await page.$$(rowSelector);
+    const gutterForDelete = await gutterAt(rowsAfterInsert, 2);
+    await gutterForDelete.click({ button: "right" });
+    await page.waitForTimeout(150);
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Delete row");
+      btn.click();
+    });
+    await page.waitForTimeout(300);
+    console.log("Row count after 'Delete row' (expect back to 50 rows):", await rowCountText());
+
+    // Context menu closes on outside click.
+    const rowsForOutsideClick = await page.$$(rowSelector);
+    const gutterForClose = await gutterAt(rowsForOutsideClick, 2);
+    await gutterForClose.click({ button: "right" });
+    await page.waitForTimeout(150);
+    const menuOpenBeforeOutsideClick = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("button")).some((b) => b.textContent === "Delete row"),
+    );
+    await page.mouse.click(500, 500);
+    await page.waitForTimeout(150);
+    const menuOpenAfterOutsideClick = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("button")).some((b) => b.textContent === "Delete row"),
+    );
+    console.log(
+      "Context menu open before/after an outside click (expect true -> false):",
+      menuOpenBeforeOutsideClick,
+      "->",
+      menuOpenAfterOutsideClick,
+    );
+
+    // Column insert/delete — verify via the fetched row width (colCount).
+    const colCountFromRow = () =>
+      page.evaluate(() => (window.__mockRows__[0] ? window.__mockRows__[0].length : null));
+    console.log("Column count before insert (expect 5):", await colCountFromRow());
+    const headerColForMenu = await page.$('[data-gigagrid-scroll] > div:first-child > div:nth-child(3)');
+    await headerColForMenu.click({ button: "right" });
+    await page.waitForTimeout(150);
+    const colMenuItems = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("button")).map((b) => b.textContent),
+    );
+    console.log(
+      "Column context menu items (expect to include Insert column left/right, Delete column):",
+      colMenuItems.filter((t) => /column/i.test(t || "")),
+    );
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Insert column left");
+      btn.click();
+    });
+    await page.waitForTimeout(300);
+    console.log("Column count after 'Insert column left' (expect 6):", await colCountFromRow());
+
+    const headerColForDelete = await page.$('[data-gigagrid-scroll] > div:first-child > div:nth-child(3)');
+    await headerColForDelete.click({ button: "right" });
+    await page.waitForTimeout(150);
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Delete column");
+      btn.click();
+    });
+    await page.waitForTimeout(300);
+    console.log("Column count after 'Delete column' (expect back to 5):", await colCountFromRow());
+    await page.screenshot({ path: path.join(OUT_DIR, "row-col-context-menu.png") });
 
     await browser.close();
   } finally {
