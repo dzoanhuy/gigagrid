@@ -12,10 +12,6 @@ const HEADER_HEIGHT = ROW_HEIGHT;
 const MIN_ROW_HEIGHT = 18;
 const MIN_COL_WIDTH = 40;
 const DEFAULT_COL_WIDTH = 100;
-// Columns aren't fixed-width in this phase (cells auto-size to content), so
-// goto-column scroll is an estimate, not exact — good enough for "get roughly
-// there", refine later if a fixed column-width model is added.
-const ESTIMATED_COL_WIDTH = 120;
 
 export interface VisibleRange {
   start: number;
@@ -54,6 +50,7 @@ interface GridProps {
 export interface GridHandle {
   scrollToRow: (row: number) => void;
   scrollToCol: (col: number) => void;
+  selectCell: (row: number, col: number) => void;
 }
 
 interface CellPos {
@@ -135,7 +132,21 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     scrollToCol: (col: number) => {
       const el = containerRef.current;
       if (!el) return;
-      el.scrollLeft = col * ESTIMATED_COL_WIDTH;
+      let left = 0;
+      for (let c = 0; c < col; c++) left += colWidths[c] ?? DEFAULT_COL_WIDTH;
+      el.scrollLeft = left;
+    },
+    selectCell: (row: number, col: number) => {
+      setSelStart({ row, col });
+      setSelEnd({ row, col });
+      const el = containerRef.current;
+      if (el) {
+        const offset = freezeHeader ? Math.max(0, row - 1) : row;
+        el.scrollTop = offset * rowHeight;
+        let left = 0;
+        for (let c = 0; c < col; c++) left += colWidths[c] ?? DEFAULT_COL_WIDTH;
+        el.scrollLeft = left;
+      }
     },
   }));
 
@@ -341,7 +352,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       style={{ overflow: "auto", height: "100%", position: "relative", outline: "none", userSelect: "none" }}
     >
       {showGridChrome && (
-        <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: "var(--bg)" }}>
+        <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: "var(--header-bg)" }}>
           <div
             style={{
               position: "sticky",
@@ -350,13 +361,22 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
               flexShrink: 0,
               minWidth: GUTTER_WIDTH,
               height: HEADER_HEIGHT,
-              background: "var(--bg)",
+              background: "var(--header-bg)",
               ...chromeBorder,
             }}
           />
           {Array.from({ length: colCount }, (_, c) => (
             <div
               key={c}
+              onMouseDown={(e) => {
+                if (e.shiftKey && selStart) {
+                  setSelEnd({ row: rowCount - 1, col: c });
+                } else {
+                  setSelStart({ row: 0, col: c });
+                  setSelEnd({ row: rowCount - 1, col: c });
+                }
+                containerRef.current?.focus();
+              }}
               style={{
                 position: "relative",
                 flexShrink: 0,
@@ -365,6 +385,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
+                cursor: "pointer",
                 ...chromeBorder,
               }}
             >
@@ -385,7 +406,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
             zIndex: 3,
             display: "flex",
             height: HEADER_HEIGHT,
-            background: "var(--bg)",
+            background: "var(--header-bg)",
           }}
         >
           {showGridChrome && (
@@ -396,7 +417,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
                 zIndex: 4,
                 flexShrink: 0,
               minWidth: GUTTER_WIDTH,
-                background: "var(--bg)",
+                background: "var(--header-bg)",
                 display: "flex",
                 alignItems: "center",
                 justifyContent: "center",
@@ -437,16 +458,26 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
             >
               {showGridChrome && (
                 <div
+                  onMouseDown={(e) => {
+                    if (e.shiftKey && selStart) {
+                      setSelEnd({ row: rowIndex, col: colCount - 1 });
+                    } else {
+                      setSelStart({ row: rowIndex, col: 0 });
+                      setSelEnd({ row: rowIndex, col: colCount - 1 });
+                    }
+                    containerRef.current?.focus();
+                  }}
                   style={{
                     position: "sticky",
                     left: 0,
                     zIndex: 2,
                     flexShrink: 0,
-              minWidth: GUTTER_WIDTH,
-                    background: "var(--bg)",
+                    minWidth: GUTTER_WIDTH,
+                    background: "var(--header-bg)",
                     display: "flex",
                     alignItems: "center",
                     justifyContent: "center",
+                    cursor: "pointer",
                     ...chromeBorder,
                   }}
                 >

@@ -4,12 +4,20 @@ export interface GridStats {
   selection: { rows: number; cols: number } | null;
 }
 
+export interface StatusFile {
+  path: string;
+  row_count: number;
+  format: string;
+  encoding: string;
+  line_ending: string;
+}
+
 interface StatusBarProps {
-  totalRows: number;
+  file: StatusFile;
   stats: GridStats;
 }
 
-export function StatusBar({ totalRows, stats }: StatusBarProps) {
+export function StatusBar({ file, stats }: StatusBarProps) {
   return (
     <div
       style={{
@@ -21,10 +29,18 @@ export function StatusBar({ totalRows, stats }: StatusBarProps) {
         lineHeight: "16px",
         opacity: 0.8,
         flexShrink: 0,
+        overflow: "hidden",
+        whiteSpace: "nowrap",
       }}
     >
-      <span>{totalRows.toLocaleString()} rows</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }} title={file.path}>
+        {file.path}
+      </span>
+      <span>{file.row_count.toLocaleString()} rows</span>
       <span>{stats.totalCols} cols</span>
+      <span>{file.format}</span>
+      <span>{file.encoding}</span>
+      <span>{file.line_ending}</span>
       {stats.cursor && (
         <span>
           cursor: R{stats.cursor.row + 1}, C{stats.cursor.col + 1}

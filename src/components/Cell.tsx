@@ -50,6 +50,10 @@ export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps
     const availableHeight = scrollRect
       ? Math.max(MIN_HEIGHT, scrollRect.bottom - cellRect.top - EDGE_MARGIN)
       : MIN_HEIGHT;
+    // Never start narrower than the column's own (possibly user-resized)
+    // width — only the min-content floor (100px) doesn't know about that.
+    const columnWidth = el.parentElement?.getBoundingClientRect().width ?? MIN_WIDTH;
+    const widthFloor = Math.max(MIN_WIDTH, columnWidth);
 
     // Pass 1: measure the content's UNWRAPPED natural width — with wrapping
     // on (the default), a long single line just wraps at whatever narrow
@@ -59,7 +63,7 @@ export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps
     el.style.width = "auto";
     el.style.height = "auto";
     const naturalWidth = el.scrollWidth;
-    const wantedWidth = Math.min(availableWidth, Math.max(MIN_WIDTH, naturalWidth));
+    const wantedWidth = Math.min(availableWidth, Math.max(widthFloor, naturalWidth));
 
     // Pass 2: lock the width, restore wrapping, then measure height against
     // THAT width (wrapped line count depends on the width just chosen).
@@ -99,7 +103,16 @@ export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps
           }
           if (e.key === "Escape") cancel();
         }}
-        style={{ position: "absolute", zIndex: 1, boxSizing: "border-box", resize: "none" }}
+        style={{
+          position: "absolute",
+          zIndex: 1,
+          boxSizing: "border-box",
+          resize: "none",
+          font: "inherit",
+          color: "var(--fg)",
+          background: "var(--bg)",
+          border: "1px solid var(--border)",
+        }}
       />
     );
   }

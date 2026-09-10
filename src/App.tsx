@@ -3,13 +3,16 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Grid, type GridHandle } from "./components/Grid";
-import { Toolbar } from "./components/Toolbar";
+import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { StatusBar, type GridStats } from "./components/StatusBar";
 import { loadSettings, saveSettings, type Settings, type Theme } from "./settings";
 
 interface FileMeta {
   path: string;
   row_count: number;
+  format: string;
+  encoding: string;
+  line_ending: string;
 }
 
 function App() {
@@ -19,11 +22,35 @@ function App() {
   const [savedAt, setSavedAt] = useState<Date | null>(null);
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [stats, setStats] = useState<GridStats>({ totalCols: 0, cursor: null, selection: null });
+  const [showSearch, setShowSearch] = useState(false);
   const gridRef = useRef<GridHandle>(null);
+  const toolbarRef = useRef<ToolbarHandle>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
   }, [settings.theme]);
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      const mod = e.metaKey || e.ctrlKey;
+      if (!mod || !file) return;
+      if (e.key === "f") {
+        e.preventDefault();
+        setShowSearch((prev) => {
+          const next = !prev;
+          if (next) window.setTimeout(() => toolbarRef.current?.focusSearch(), 0);
+          return next;
+        });
+      } else if (e.key === "g") {
+        e.preventDefault();
+        if (!showSearch) return;
+        if (e.shiftKey) toolbarRef.current?.findPrev();
+        else toolbarRef.current?.findNext();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [file, showSearch]);
 
   function updateSettings(patch: Partial<Settings>) {
     setSettings((prev) => {
@@ -63,13 +90,16 @@ function App() {
   }
 
   function handleNavigate(row: number, col?: number) {
-    gridRef.current?.scrollToRow(row);
-    if (col !== undefined) gridRef.current?.scrollToCol(col);
+    if (col !== undefined) {
+      gridRef.current?.selectCell(row, col);
+    } else {
+      gridRef.current?.scrollToRow(row);
+    }
   }
 
   return (
     <main style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <div style={{ padding: 8, display: "flex", gap: 8, alignItems: "center" }}>
+      <div style={{ padding: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <button onClick={openFile}>Open file</button>
         <select
           value={settings.theme}
@@ -100,15 +130,10 @@ function App() {
             {saving ? "Saving…" : "Save"}
           </button>
         )}
-        {file && (
-          <span>
-            {file.path} — {file.row_count.toLocaleString()} rows
-          </span>
-        )}
+        {file && <Toolbar ref={toolbarRef} visible={showSearch} onNavigate={handleNavigate} />}
         {savedAt && <span style={{ opacity: 0.6 }}>Saved {savedAt.toLocaleTimeString()}</span>}
         {error && <span style={{ color: "red" }}>{error}</span>}
       </div>
-      {file && <Toolbar onNavigate={handleNavigate} />}
       <div style={{ flex: 1, minHeight: 0 }}>
         {file && (
           <Grid
@@ -121,7 +146,7 @@ function App() {
           />
         )}
       </div>
-      {file && <StatusBar totalRows={file.row_count} stats={stats} />}
+      {file && <StatusBar file={file} stats={stats} />}
     </main>
   );
 }

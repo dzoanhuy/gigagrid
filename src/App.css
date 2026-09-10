@@ -8,6 +8,7 @@
   --fg: #0f0f0f;
   --border: #ddd;
   --input-bg: #ffffff;
+  --header-bg: #e8e8e8;
 
   color: var(--fg);
   background-color: var(--bg);
@@ -31,6 +32,7 @@ body {
     --fg: #f6f6f6;
     --border: #444;
     --input-bg: #0f0f0f98;
+    --header-bg: #3d3d3d;
   }
 }
 
@@ -39,6 +41,7 @@ body {
   --fg: #f6f6f6;
   --border: #444;
   --input-bg: #0f0f0f98;
+  --header-bg: #3d3d3d;
 }
 
 input,
