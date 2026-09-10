@@ -3,11 +3,13 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
+import { check as checkForUpdate, type Update } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { Grid, type GridHandle } from "./components/Grid";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { StatusBar, type GridStats } from "./components/StatusBar";
 import { loadSettings, saveSettings, type Settings, type Theme } from "./settings";
-import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin } from "./icons";
+import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin, IconDownload } from "./icons";
 
 const MAX_TABS = 10;
 
@@ -37,6 +39,7 @@ function App() {
   const [activeTabId, setActiveTabId] = useState<number | null>(null);
   const [openError, setOpenError] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
+  const [updateBusy, setUpdateBusy] = useState(false);
   const gridRefs = useRef<Map<number, GridHandle>>(new Map());
   const toolbarRefs = useRef<Map<number, ToolbarHandle>>(new Map());
 
@@ -97,6 +100,41 @@ function App() {
       return next;
     });
   }
+
+  async function checkAndPromptUpdate(silent: boolean) {
+    let update: Update | null;
+    try {
+      update = await checkForUpdate();
+    } catch (e) {
+      if (!silent) setOpenError(`Check for update failed: ${e}`);
+      return;
+    }
+    if (!update) {
+      if (!silent) window.alert("Gigagrid đã là bản mới nhất.");
+      return;
+    }
+    const notes = update.body ? `\n\n${update.body}` : "";
+    const ok = window.confirm(
+      `Có bản cập nhật mới: v${update.version}${notes}\n\nTải và cài đặt ngay? Ứng dụng sẽ khởi động lại.`,
+    );
+    if (!ok) return;
+    setUpdateBusy(true);
+    try {
+      await update.downloadAndInstall();
+      await relaunch();
+    } catch (e) {
+      setUpdateBusy(false);
+      setOpenError(`Update failed: ${e}`);
+    }
+  }
+
+  // Silent on startup — a missing network / GitHub being briefly unreachable
+  // shouldn't nag the user every launch; the toolbar button covers the
+  // explicit "check now" case and surfaces its own errors.
+  useEffect(() => {
+    checkAndPromptUpdate(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function cycleTheme() {
     const order: Theme[] = ["system", "light", "dark"];
@@ -265,6 +303,14 @@ function App() {
             onClick={() => updateSettings({ freezeHeader: !settings.freezeHeader })}
           >
             <IconPin />
+          </button>
+          <button
+            className="icon-btn"
+            title={updateBusy ? "Đang cập nhật…" : "Check for updates"}
+            onClick={() => checkAndPromptUpdate(false)}
+            disabled={updateBusy}
+          >
+            <IconDownload />
           </button>
         </div>
       </div>

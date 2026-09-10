@@ -44,6 +44,15 @@
         "description": "Tab-separated values file",
         "role": "Editor"
       }
-    ]
+    ],
+    "createUpdaterArtifacts": true
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRCRkU3QzI3OTRDQzMxMzUKUldRMU1jeVVKM3orU3d3NlVDdzRqdEE4QkV5V3VTKzBOS3pPNUpzUjhFQzEyNysxbktlcWttaG8K",
+      "endpoints": [
+        "https://github.com/dzoanhuy/gigagrid/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

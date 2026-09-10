@@ -92,3 +92,11 @@ export function IconHash() {
     </svg>
   );
 }
+
+export function IconDownload() {
+  return (
+    <svg {...common}>
+      <path d="M12 3v12M7 10l5 5 5-5M4 21h16" />
+    </svg>
+  );
+}
