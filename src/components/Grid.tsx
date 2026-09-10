@@ -94,7 +94,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
   const [rowsByIndex, setRowsByIndex] = useState<Map<number, string[]>>(new Map());
   const [selStart, setSelStart] = useState<CellPos | null>(null);
   const [selEnd, setSelEnd] = useState<CellPos | null>(null);
-  const [editingRow, setEditingRow] = useState<number | null>(null);
+  const [editingCell, setEditingCell] = useState<CellPos | null>(null);
   const [rowHeight, setRowHeight] = useState(ROW_HEIGHT);
   const [colWidths, setColWidths] = useState<Record<number, number>>({});
   const selectingRef = useRef(false);
@@ -328,6 +328,27 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
     if (selectingRef.current) setSelEnd({ row, col });
   }
 
+  // Single entry point for "start editing this cell" — used by both Enter
+  // (on whatever is currently selected) and a cell's own double-click, so
+  // both paths agree on collapsing the selection the same way: an open edit
+  // box replaces the multi-cell highlight with the single cell being typed
+  // into, and becomes the new anchor for navigation once editing ends.
+  function requestEdit(row: number, col: number) {
+    setEditingCell({ row, col });
+    setSelStart({ row, col });
+    setSelEnd({ row, col });
+  }
+
+  function endEdit() {
+    setEditingCell(null);
+    // Deferred: focusing the container SYNCHRONOUSLY here (still inside the
+    // textarea's own commit/cancel call) would blur the still-mounted
+    // textarea, re-firing its onBlur=commit reentrantly before this call
+    // even returns — a second, spurious onCommit. Waiting a tick lets
+    // React unmount the textarea first, so there's nothing left to blur.
+    window.setTimeout(() => containerRef.current?.focus(), 0);
+  }
+
   // Applying an undo/redo can touch cells anywhere in the file (including
   // rows outside the currently cached window) — the simplest CORRECT thing
   // is to drop the local cache entirely and let the existing "missing rows"
@@ -420,17 +441,21 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
   }
 
   async function handleKeyDown(e: React.KeyboardEvent) {
+    // A cell being edited owns the keyboard outright — arrow keys move its
+    // caret, Cmd+A selects its text, Cmd+C/V work on its selection, etc.
+    // The keydown still bubbles up here from the `<textarea>` (it doesn't
+    // stop propagation), so every grid-level shortcut below must yield to
+    // it rather than hijack the field.
+    if (editingCell) return;
+
     const mod = e.metaKey || e.ctrlKey;
     const isArrow =
       e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight";
 
     // Arrow-key navigation (Excel-style) runs regardless of Cmd/Ctrl/Shift —
     // handled FIRST, before the `if (!mod) return` gate below, since plain
-    // arrows and Shift+arrows carry no modifier at all. Skipped while a cell
-    // is being edited (editingRow !== null): the keydown still bubbles up
-    // from the `<textarea>` there, and intercepting it here would hijack
-    // the text caret instead of moving it within the field.
-    if (isArrow && editingRow === null) {
+    // arrows and Shift+arrows carry no modifier at all.
+    if (isArrow) {
       e.preventDefault();
       const anchor = selStart ?? { row: 0, col: 0 };
       const current = selEnd ?? { row: 0, col: 0 };
@@ -465,6 +490,16 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
         setSelEnd(target);
       }
       scrollCellIntoView(target.row, target.col);
+      return;
+    }
+
+    if (e.key === "Enter" && !mod) {
+      // Edit whatever the selection is currently anchored on — with a
+      // multi-cell range selected, that's the last-selected cell (selEnd),
+      // not the range's origin.
+      e.preventDefault();
+      const target = selEnd ?? selStart;
+      if (target) requestEdit(target.row, target.col);
       return;
     }
 
@@ -598,9 +633,11 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
             <div key={ci} style={{ position: "relative", flexShrink: 0, width: colWidths[ci] ?? DEFAULT_COL_WIDTH, ...chromeBorder }}>
               <Cell
                 value={cell}
+                editing={editingCell?.row === 0 && editingCell?.col === ci}
+                onRequestEdit={() => requestEdit(0, ci)}
                 onCommit={(v) => commitCell(0, ci, v)}
                 onOverflow={() => handleOverflow(0)}
-                onEditingChange={(editing) => setEditingRow(editing ? 0 : null)}
+                onEditEnd={endEdit}
               />
             </div>
           ))}
@@ -620,7 +657,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                 height: rowHeight,
                 display: "flex",
                 width: "100%",
-                zIndex: editingRow === rowIndex ? 5 : undefined,
+                zIndex: editingCell?.row === rowIndex ? 5 : undefined,
               }}
             >
               {showGridChrome && (
@@ -685,9 +722,11 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                     >
                       <Cell
                         value={cell}
+                        editing={editingCell?.row === rowIndex && editingCell?.col === ci}
+                        onRequestEdit={() => requestEdit(rowIndex, ci)}
                         onCommit={(v) => commitCell(rowIndex, ci, v)}
                         onOverflow={() => handleOverflow(rowIndex)}
-                        onEditingChange={(editing) => setEditingRow(editing ? rowIndex : null)}
+                        onEditEnd={endEdit}
                       />
                     </div>
                   ))

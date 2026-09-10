@@ -6,20 +6,22 @@ const EDGE_MARGIN = 4;
 
 interface CellProps {
   value: string;
+  editing: boolean;
+  onRequestEdit: () => void;
   onCommit: (value: string) => void;
+  onEditEnd: () => void;
   onOverflow?: () => void;
-  onEditingChange?: (editing: boolean) => void;
 }
 
-/** One editable cell: double-click/Enter to edit, Enter/blur to commit,
- * Escape to cancel. Editing uses a textarea that auto-grows to fit content,
- * up to whatever space is left in the grid area (to its right/bottom edge —
- * not a small fixed cap), then scrolls internally — Shift+Enter inserts a
+/** One editable cell: double-click/Enter (parent decides which cell, via
+ * `editing`/`onRequestEdit`) to edit, Enter/blur to commit, Escape to
+ * cancel. Editing uses a textarea that auto-grows to fit content, up to
+ * whatever space is left in the grid area (to its right/bottom edge — not a
+ * small fixed cap), then scrolls internally — Shift+Enter inserts a
  * newline, plain Enter still commits. While editing, reports whether the
  * content still overflows the grown box so the parent Grid can auto-scroll
  * to reveal it. */
-export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps) {
-  const [editing, setEditing] = useState(false);
+export function Cell({ value, editing, onRequestEdit, onCommit, onEditEnd, onOverflow }: CellProps) {
   const [draft, setDraft] = useState(value);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -32,10 +34,6 @@ export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps
     inputRef.current?.focus();
     inputRef.current?.select();
   }, [editing]);
-
-  useEffect(() => {
-    onEditingChange?.(editing);
-  }, [editing, onEditingChange]);
 
   useEffect(() => {
     if (!editing) return;
@@ -80,13 +78,13 @@ export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps
   }, [editing, draft, onOverflow]);
 
   function commit() {
-    setEditing(false);
     if (draft !== value) onCommit(draft);
+    onEditEnd();
   }
 
   function cancel() {
     setDraft(value);
-    setEditing(false);
+    onEditEnd();
   }
 
   if (editing) {
@@ -119,7 +117,7 @@ export function Cell({ value, onCommit, onOverflow, onEditingChange }: CellProps
 
   return (
     <div
-      onDoubleClick={() => setEditing(true)}
+      onDoubleClick={onRequestEdit}
       style={{
         padding: "0 6px",
         whiteSpace: "nowrap",
