@@ -148,6 +148,19 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     return () => observer.disconnect();
   }, []);
 
+  // Shared by the imperative handle (goto/search) and keyboard navigation
+  // (arrow keys) — every caller that moves the cursor/selection needs the
+  // new position scrolled into view the same way.
+  function scrollCellIntoView(row: number, col: number) {
+    const el = containerRef.current;
+    if (!el) return;
+    const offset = freezeHeader ? Math.max(0, row - 1) : row;
+    el.scrollTop = offset * rowHeight;
+    let left = 0;
+    for (let c = 0; c < col; c++) left += colWidths[c] ?? DEFAULT_COL_WIDTH;
+    el.scrollLeft = left;
+  }
+
   useImperativeHandle(ref, () => ({
     scrollToRow: (row: number) => {
       const el = containerRef.current;
@@ -165,14 +178,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     selectCell: (row: number, col: number) => {
       setSelStart({ row, col });
       setSelEnd({ row, col });
-      const el = containerRef.current;
-      if (el) {
-        const offset = freezeHeader ? Math.max(0, row - 1) : row;
-        el.scrollTop = offset * rowHeight;
-        let left = 0;
-        for (let c = 0; c < col; c++) left += colWidths[c] ?? DEFAULT_COL_WIDTH;
-        el.scrollLeft = left;
-      }
+      scrollCellIntoView(row, col);
     },
   }));
 
@@ -377,6 +383,48 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
 
   async function handleKeyDown(e: React.KeyboardEvent) {
     const mod = e.metaKey || e.ctrlKey;
+    const isArrow =
+      e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight";
+
+    // Arrow-key navigation (Excel-style) runs regardless of Cmd/Ctrl/Shift —
+    // handled FIRST, before the `if (!mod) return` gate below, since plain
+    // arrows and Shift+arrows carry no modifier at all. Skipped while a cell
+    // is being edited (editingRow !== null): the keydown still bubbles up
+    // from the `<textarea>` there, and intercepting it here would hijack
+    // the text caret instead of moving it within the field.
+    if (isArrow && editingRow === null) {
+      e.preventDefault();
+      const anchor = selStart ?? { row: 0, col: 0 };
+      const current = selEnd ?? { row: 0, col: 0 };
+      const target = { ...current };
+      if (mod) {
+        // Cmd/Ctrl+Arrow — jump straight to the edge.
+        if (e.key === "ArrowUp") target.row = 0;
+        else if (e.key === "ArrowDown") target.row = rowCount - 1;
+        else if (e.key === "ArrowLeft") target.col = 0;
+        else if (e.key === "ArrowRight") target.col = Math.max(0, colCount - 1);
+      } else {
+        // Plain Arrow — move one cell.
+        if (e.key === "ArrowUp") target.row = Math.max(0, current.row - 1);
+        else if (e.key === "ArrowDown") target.row = Math.min(rowCount - 1, current.row + 1);
+        else if (e.key === "ArrowLeft") target.col = Math.max(0, current.col - 1);
+        else if (e.key === "ArrowRight") target.col = Math.min(Math.max(0, colCount - 1), current.col + 1);
+      }
+      if (e.shiftKey) {
+        // Shift(+Cmd/Ctrl)+Arrow — extend the selection: anchor stays put,
+        // only the far corner moves.
+        setSelStart(anchor);
+        setSelEnd(target);
+      } else {
+        // Plain/Cmd+Arrow with no Shift — move the cursor: collapse the
+        // selection to the single target cell.
+        setSelStart(target);
+        setSelEnd(target);
+      }
+      scrollCellIntoView(target.row, target.col);
+      return;
+    }
+
     if (!mod) return;
     if (e.key === "c") {
       e.preventDefault();
@@ -396,26 +444,6 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       e.preventDefault();
       setSelStart({ row: 0, col: 0 });
       setSelEnd({ row: rowCount - 1, col: Math.max(0, colCount - 1) });
-    } else if (
-      e.shiftKey &&
-      (e.key === "ArrowUp" || e.key === "ArrowDown" || e.key === "ArrowLeft" || e.key === "ArrowRight")
-    ) {
-      // Cmd/Ctrl+Shift+Arrow — Excel-style "extend selection to the edge":
-      // keep the existing anchor (selStart), push the far corner (selEnd)
-      // all the way to the top/bottom/first/last row or column.
-      e.preventDefault();
-      if (!selStart || !selEnd) return;
-      const target = { ...selEnd };
-      if (e.key === "ArrowUp") target.row = 0;
-      else if (e.key === "ArrowDown") target.row = rowCount - 1;
-      else if (e.key === "ArrowLeft") target.col = 0;
-      else if (e.key === "ArrowRight") target.col = Math.max(0, colCount - 1);
-      setSelEnd(target);
-      const el = containerRef.current;
-      if (el) {
-        const offset = freezeHeader ? Math.max(0, target.row - 1) : target.row;
-        el.scrollTop = offset * rowHeight;
-      }
     }
   }
 

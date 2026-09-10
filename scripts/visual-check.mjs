@@ -482,6 +482,56 @@ async function main() {
     console.log("Selection after Cmd+Shift+ArrowUp from row 4:", selectionAfterExtend, "(expect 5 x 5 = rows 0-4, all cols)");
     await page.screenshot({ path: path.join(OUT_DIR, "shift-extend-to-top.png") });
 
+    // --- Check 10b: plain Arrow moves the cursor by one cell, Shift+Arrow
+    // extends by one cell, Cmd+Arrow jumps the CURSOR (not just the
+    // scrollbar) to the edge ---
+    const cursorText = async () => {
+      const spans = Array.from(await page.$$eval("span", (els) => els.map((e) => e.textContent)));
+      return spans.find((t) => /^cursor: /.test(t || "")) || null;
+    };
+    const selectionText = async () => {
+      const spans = Array.from(await page.$$eval("span", (els) => els.map((e) => e.textContent)));
+      return spans.find((t) => /^selection: /.test(t || "")) || null;
+    };
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 0;
+    });
+    await page.waitForTimeout(200);
+    const freshRowsForArrow = await page.$$(rowSelector);
+    const targetCell4 = async (rIdx, cIdx) => {
+      const cells = await freshRowsForArrow[rIdx].$$(":scope > div");
+      const dataCellsOnly = [];
+      for (const c of cells) {
+        const pos = await c.evaluate((el) => getComputedStyle(el).position);
+        if (pos !== "sticky") dataCellsOnly.push(c);
+      }
+      return dataCellsOnly[cIdx];
+    };
+    // click a plain cell first (row 4, col 4 by DOM position) as a clean start
+    const startCell = await targetCell4(3, 2);
+    await startCell.click();
+    await page.waitForTimeout(150);
+    console.log("Cursor before arrow moves:", await cursorText());
+
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(150);
+    console.log("Cursor after plain ArrowDown (expect row +1, same col):", await cursorText());
+
+    await page.keyboard.press("Shift+ArrowRight");
+    await page.waitForTimeout(150);
+    console.log(
+      "Selection after Shift+ArrowRight (expect 1 x 2, extends one cell right):",
+      await selectionText(),
+    );
+
+    await page.keyboard.press("Meta+ArrowUp");
+    await page.waitForTimeout(200);
+    console.log(
+      "Cursor after Cmd+ArrowUp (expect R1 — cursor must MOVE to row 0, not just scroll there):",
+      await cursorText(),
+    );
+    await page.screenshot({ path: path.join(OUT_DIR, "arrow-key-nav.png") });
+
     // --- Check 11: header/frozen-row bar background covers the FULL
     // scrollable width, not just the viewport — resize a column wide enough
     // to force horizontal scroll, scroll all the way right, and compare the
