@@ -26,6 +26,9 @@ pub type AppState = Mutex<Option<OpenFile>>;
 pub struct FileMeta {
     pub path: String,
     pub row_count: usize,
+    pub format: String,
+    pub encoding: String,
+    pub line_ending: String,
 }
 
 #[tauri::command]
@@ -33,6 +36,9 @@ pub fn open_file(path: String, state: State<AppState>) -> Result<FileMeta, Strin
     let p = PathBuf::from(&path);
     let index = CsvIndex::build(&p).map_err(|e| e.to_string())?;
     let row_count = index.row_count();
+    let format = index.format_label().to_string();
+    let encoding = index.encoding_label().to_string();
+    let line_ending = index.line_ending_label().to_string();
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     *guard = Some(OpenFile {
         path: p,
@@ -42,7 +48,7 @@ pub fn open_file(path: String, state: State<AppState>) -> Result<FileMeta, Strin
         sort_col: None,
         filter: None,
     });
-    Ok(FileMeta { path, row_count })
+    Ok(FileMeta { path, row_count, format, encoding, line_ending })
 }
 
 #[tauri::command]
@@ -191,18 +197,27 @@ pub fn redo(state: State<AppState>) -> Result<bool, String> {
 pub fn search(
     query: String,
     from_row: usize,
+    from_col: usize,
     direction: String,
     state: State<AppState>,
-) -> Result<Option<usize>, String> {
+) -> Result<Option<(usize, usize)>, String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
     let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
     let result = if direction == "prev" {
-        crate::search::find_prev(&open_file.index, &mut file, &query, from_row)
+        crate::search::find_prev(&open_file.index, &mut file, &query, from_row, from_col)
     } else {
-        crate::search::find_next(&open_file.index, &mut file, &query, from_row)
+        crate::search::find_next(&open_file.index, &mut file, &query, from_row, from_col)
     };
     Ok(result)
+}
+
+#[tauri::command]
+pub fn count_matches(query: String, state: State<AppState>) -> Result<usize, String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
+    let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
+    Ok(crate::search::count_matches(&open_file.index, &mut file, &query))
 }
 
 /// Validates `row` against the open file's row count. Column bounds are not

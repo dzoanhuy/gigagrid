@@ -14,6 +14,7 @@ pub fn save(index: &CsvIndex, overlay: &Overlay, src: &Path, dst: &Path) -> io::
     let mut src_file = File::open(src)?;
     let dst_file = File::create(dst)?;
     let mut writer = BufWriter::new(dst_file);
+    let delimiter = index.delimiter();
 
     for r in 0..index.row_count() {
         let mut row = index.read_row(&mut src_file, r)?;
@@ -22,21 +23,25 @@ pub fn save(index: &CsvIndex, overlay: &Overlay, src: &Path, dst: &Path) -> io::
                 *cell = edited.clone();
             }
         }
-        writeln!(writer, "{}", encode_csv_row(&row))?;
+        writeln!(writer, "{}", encode_csv_row(&row, delimiter))?;
     }
     writer.flush()
 }
 
-fn encode_csv_row(fields: &[String]) -> String {
+/// Re-encodes using the SAME delimiter the file was opened with (`index`
+/// sniffs it once at open time) — saving a TSV file must produce TSV back,
+/// not silently rewrite it as comma-separated.
+fn encode_csv_row(fields: &[String], delimiter: u8) -> String {
     fields
         .iter()
-        .map(|f| encode_csv_field(f))
+        .map(|f| encode_csv_field(f, delimiter))
         .collect::<Vec<_>>()
-        .join(",")
+        .join(std::str::from_utf8(&[delimiter]).unwrap())
 }
 
-fn encode_csv_field(field: &str) -> String {
-    if field.contains(',') || field.contains('"') || field.contains('\n') {
+fn encode_csv_field(field: &str, delimiter: u8) -> String {
+    let delim_char = delimiter as char;
+    if field.contains(delim_char) || field.contains('"') || field.contains('\n') {
         format!("\"{}\"", field.replace('"', "\"\""))
     } else {
         field.to_string()
@@ -116,6 +121,25 @@ mod tests {
 
         let saved = std::fs::read_to_string(&dst).unwrap();
         assert_eq!(saved, "c\na\nb\n");
+
+        std::fs::remove_file(&src).ok();
+        std::fs::remove_file(&dst).ok();
+    }
+
+    #[test]
+    fn save_round_trips_tab_delimited_file_as_tsv_not_csv() {
+        let src = write_temp("tsv_src", "a\tb\n1\t2\n");
+        let dst = temp_dst("tsv");
+
+        let index = CsvIndex::build(&src).unwrap();
+        assert_eq!(index.format_label(), "TSV");
+        let mut overlay = Overlay::new();
+        overlay.set(1, 0, "EDITED".to_string());
+
+        save(&index, &overlay, &src, &dst).unwrap();
+
+        let saved = std::fs::read_to_string(&dst).unwrap();
+        assert_eq!(saved, "a\tb\nEDITED\t2\n");
 
         std::fs::remove_file(&src).ok();
         std::fs::remove_file(&dst).ok();

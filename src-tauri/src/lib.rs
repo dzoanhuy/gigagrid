@@ -14,6 +14,7 @@ pub fn run() {
             commands::open_file,
             commands::get_rows,
             commands::search,
+            commands::count_matches,
             commands::goto,
             commands::set_cell,
             commands::set_cells_batch,

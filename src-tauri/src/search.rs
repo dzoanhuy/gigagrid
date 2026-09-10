@@ -2,39 +2,98 @@ use crate::index::CsvIndex;
 use crate::overlay::Overlay;
 use std::fs::File;
 
-/// Scan forward starting AFTER `from_row` (wrapping to 0), reusing
-/// `CsvIndex::read_row` directly — no separate file handle or buffer.
-pub fn find_next(index: &CsvIndex, file: &mut File, query: &str, from_row: usize) -> Option<usize> {
+/// Scan forward cell-by-cell starting AFTER `(from_row, from_col)` in
+/// row-major order, wrapping around the whole file — returns the exact
+/// `(row, col)` of the next match so the frontend can SELECT that cell, not
+/// just scroll to its row. Falls back to re-checking `from_row`'s own
+/// columns up to and including `from_col` (the one range the main wrap-
+/// around loop never revisits, since it starts back at `from_row` only via
+/// `offset == 0`, at `from_col + 1`) so a lone match keeps re-selecting
+/// itself on repeated "next" instead of vanishing.
+pub fn find_next(
+    index: &CsvIndex,
+    file: &mut File,
+    query: &str,
+    from_row: usize,
+    from_col: usize,
+) -> Option<(usize, usize)> {
     let row_count = index.row_count();
     if row_count == 0 || query.is_empty() {
         return None;
     }
     for offset in 0..row_count {
-        let r = (from_row + 1 + offset) % row_count;
+        let r = (from_row + offset) % row_count;
         if let Ok(row) = index.read_row(file, r) {
-            if row.iter().any(|cell| cell.contains(query)) {
-                return Some(r);
+            let start_col = if offset == 0 { from_col + 1 } else { 0 };
+            for (c, cell) in row.iter().enumerate().skip(start_col) {
+                if cell.contains(query) {
+                    return Some((r, c));
+                }
+            }
+        }
+    }
+    if let Ok(row) = index.read_row(file, from_row) {
+        for (c, cell) in row.iter().enumerate() {
+            if c > from_col {
+                break;
+            }
+            if cell.contains(query) {
+                return Some((from_row, c));
             }
         }
     }
     None
 }
 
-/// Scan backward starting BEFORE `from_row` (wrapping to the last row).
-pub fn find_prev(index: &CsvIndex, file: &mut File, query: &str, from_row: usize) -> Option<usize> {
+/// Mirror of `find_next`, scanning backward from BEFORE `(from_row,
+/// from_col)`.
+pub fn find_prev(
+    index: &CsvIndex,
+    file: &mut File,
+    query: &str,
+    from_row: usize,
+    from_col: usize,
+) -> Option<(usize, usize)> {
     let row_count = index.row_count();
     if row_count == 0 || query.is_empty() {
         return None;
     }
     for offset in 0..row_count {
-        let r = (from_row + row_count - 1 - offset) % row_count;
+        let r = (from_row + row_count - offset) % row_count;
         if let Ok(row) = index.read_row(file, r) {
-            if row.iter().any(|cell| cell.contains(query)) {
-                return Some(r);
+            let upper = if offset == 0 { from_col } else { row.len() };
+            for c in (0..upper.min(row.len())).rev() {
+                if row[c].contains(query) {
+                    return Some((r, c));
+                }
+            }
+        }
+    }
+    if let Ok(row) = index.read_row(file, from_row) {
+        for c in (from_col..row.len()).rev() {
+            if row[c].contains(query) {
+                return Some((from_row, c));
             }
         }
     }
     None
+}
+
+/// Full scan counting every matching CELL (not row) across the whole
+/// file — same order of cost as one `find_next` sweep, run once per query
+/// change (debounced on the frontend), not on every fetch.
+pub fn count_matches(index: &CsvIndex, file: &mut File, query: &str) -> usize {
+    let row_count = index.row_count();
+    if row_count == 0 || query.is_empty() {
+        return 0;
+    }
+    let mut count = 0;
+    for r in 0..row_count {
+        if let Ok(row) = index.read_row(file, r) {
+            count += row.iter().filter(|cell| cell.contains(query)).count();
+        }
+    }
+    count
 }
 
 /// Returns ORIGINAL row indices in the desired display order/subset — a
@@ -107,8 +166,30 @@ mod tests {
         let path = write_temp("find_next_wrap", "a,b\nc,needle\ne,f\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        // start search from the last row -> should wrap and find row 1
-        assert_eq!(find_next(&index, &mut file, "needle", 2), Some(1));
+        // start search from the last row -> should wrap and find row 1, col 1
+        assert_eq!(find_next(&index, &mut file, "needle", 2, 0), Some((1, 1)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn find_next_advances_within_the_same_row() {
+        let path = write_temp("find_next_same_row", "needle,needle,x\na,b,c\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        // anchored at (0,0) (the first match) -> next should be (0,1), the
+        // SECOND match in the same row, not skip ahead to another row
+        assert_eq!(find_next(&index, &mut file, "needle", 0, 0), Some((0, 1)));
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn find_next_lone_match_keeps_reselecting_itself() {
+        let path = write_temp("find_next_lone", "a,needle\nc,d\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        // anchored exactly ON the only match -> pressing "next" again wraps
+        // all the way around and must land back on it, not return None
+        assert_eq!(find_next(&index, &mut file, "needle", 0, 1), Some((0, 1)));
         std::fs::remove_file(&path).ok();
     }
 
@@ -118,7 +199,7 @@ mod tests {
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
         // start search from row 0 backward -> should wrap and find row 0 itself
-        assert_eq!(find_prev(&index, &mut file, "needle", 0), Some(0));
+        assert_eq!(find_prev(&index, &mut file, "needle", 0, 0), Some((0, 0)));
         std::fs::remove_file(&path).ok();
     }
 
@@ -127,7 +208,25 @@ mod tests {
         let path = write_temp("no_match", "a,b\nc,d\n");
         let index = CsvIndex::build(&path).unwrap();
         let mut file = File::open(&path).unwrap();
-        assert_eq!(find_next(&index, &mut file, "zzz", 0), None);
+        assert_eq!(find_next(&index, &mut file, "zzz", 0, 0), None);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn count_matches_counts_every_matching_cell() {
+        let path = write_temp("count_matches", "needle,x\nneedle,needle\ny,z\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(count_matches(&index, &mut file, "needle"), 3);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn count_matches_empty_query_is_zero() {
+        let path = write_temp("count_matches_empty", "a,b\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut file = File::open(&path).unwrap();
+        assert_eq!(count_matches(&index, &mut file, ""), 0);
         std::fs::remove_file(&path).ok();
     }
 
