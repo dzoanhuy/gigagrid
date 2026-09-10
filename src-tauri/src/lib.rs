@@ -41,12 +41,25 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
-            if let RunEvent::Opened { urls } = event {
-                if let Some(url) = urls.first() {
-                    if let Ok(path) = url.to_file_path() {
-                        let _ = app_handle.emit("open-file", path.to_string_lossy().to_string());
+            // Keeps `app_handle` "used" on targets where the match below
+            // compiles down to just `_ => {}` (see comment on the Opened arm).
+            let _ = &app_handle;
+            match event {
+                // `RunEvent::Opened` only EXISTS on macOS/iOS/Android — matching
+                // it unconditionally fails to compile on Windows/Linux (that
+                // variant isn't in the enum on those targets at all, not just
+                // "never fires"). Windows/Linux get the opened path through the
+                // single-instance callback / cold-start argv instead
+                // (commands.rs PendingOpen), which doesn't go through RunEvent.
+                #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
+                RunEvent::Opened { urls } => {
+                    if let Some(url) = urls.first() {
+                        if let Ok(path) = url.to_file_path() {
+                            let _ = app_handle.emit("open-file", path.to_string_lossy().to_string());
+                        }
                     }
                 }
+                _ => {}
             }
         });
 }
