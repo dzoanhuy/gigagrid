@@ -380,7 +380,16 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       style={{ overflow: "auto", height: "100%", position: "relative", outline: "none", userSelect: "none" }}
     >
       {showGridChrome && (
-        <div style={{ display: "flex", position: "sticky", top: 0, zIndex: 3, background: "var(--header-bg)" }}>
+        <div
+          style={{
+            display: "flex",
+            width: "fit-content",
+            position: "sticky",
+            top: 0,
+            zIndex: 3,
+            background: "var(--header-bg)",
+          }}
+        >
           <div
             style={{
               position: "sticky",
@@ -434,6 +443,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
             top: chromeOffset,
             zIndex: 3,
             display: "flex",
+            width: "fit-content",
             height: HEADER_HEIGHT,
             background: "var(--header-bg)",
           }}
