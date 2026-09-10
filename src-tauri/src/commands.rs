@@ -5,6 +5,22 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
 
+pub type TabId = u64;
+const MAX_TABS: usize = 10;
+
+pub struct TabRegistry {
+    next_id: TabId,
+    files: std::collections::HashMap<TabId, OpenFile>,
+}
+
+impl TabRegistry {
+    pub fn new() -> Self {
+        TabRegistry { next_id: 0, files: std::collections::HashMap::new() }
+    }
+}
+
+pub type AppState = Mutex<TabRegistry>;
+
 /// Currently open file: the index (read-only over the raw file), the path
 /// so a read command can (re)open the underlying `File` handle, the edit
 /// overlay (phase 05) merged into every read, and an optional sort/filter
@@ -20,10 +36,9 @@ pub struct OpenFile {
     pub filter: Option<String>,
 }
 
-pub type AppState = Mutex<Option<OpenFile>>;
-
 #[derive(serde::Serialize)]
 pub struct FileMeta {
+    pub tab_id: TabId,
     pub path: String,
     pub row_count: usize,
     pub format: String,
@@ -33,6 +48,11 @@ pub struct FileMeta {
 
 #[tauri::command]
 pub fn open_file(path: String, state: State<AppState>) -> Result<FileMeta, String> {
+    let guard = state.lock().map_err(|e| e.to_string())?;
+    if guard.files.len() >= MAX_TABS {
+        return Err(format!("cannot open more than {MAX_TABS} tabs — close one first"));
+    }
+    drop(guard);
     let p = PathBuf::from(&path);
     let index = CsvIndex::build(&p).map_err(|e| e.to_string())?;
     let row_count = index.row_count();
@@ -40,7 +60,9 @@ pub fn open_file(path: String, state: State<AppState>) -> Result<FileMeta, Strin
     let encoding = index.encoding_label().to_string();
     let line_ending = index.line_ending_label().to_string();
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    *guard = Some(OpenFile {
+    let tab_id = guard.next_id;
+    guard.next_id += 1;
+    guard.files.insert(tab_id, OpenFile {
         path: p,
         index,
         overlay: Overlay::new(),
@@ -48,17 +70,18 @@ pub fn open_file(path: String, state: State<AppState>) -> Result<FileMeta, Strin
         sort_col: None,
         filter: None,
     });
-    Ok(FileMeta { path, row_count, format, encoding, line_ending })
+    Ok(FileMeta { tab_id, path, row_count, format, encoding, line_ending })
 }
 
 #[tauri::command]
 pub fn get_rows(
+    tab_id: TabId,
     start: usize,
     count: usize,
     state: State<AppState>,
 ) -> Result<Vec<Vec<String>>, String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     get_rows_impl(open_file, start, count)
 }
 
@@ -115,25 +138,25 @@ fn rebuild_view(open_file: &mut OpenFile) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn set_sort(col: usize, state: State<AppState>) -> Result<(), String> {
+pub fn set_sort(col: usize, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     open_file.sort_col = Some(col);
     rebuild_view(open_file)
 }
 
 #[tauri::command]
-pub fn set_filter(query: String, state: State<AppState>) -> Result<(), String> {
+pub fn set_filter(query: String, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     open_file.filter = if query.is_empty() { None } else { Some(query) };
     rebuild_view(open_file)
 }
 
 #[tauri::command]
-pub fn clear_view(state: State<AppState>) -> Result<(), String> {
+pub fn clear_view(tab_id: TabId, state: State<AppState>) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     open_file.sort_col = None;
     open_file.filter = None;
     open_file.view = None;
@@ -145,9 +168,9 @@ pub fn clear_view(state: State<AppState>) -> Result<(), String> {
 /// against sorted/filtered coordinates). Defaults `dst` to the originally
 /// opened path.
 #[tauri::command]
-pub fn save_file(dst: Option<String>, state: State<AppState>) -> Result<(), String> {
+pub fn save_file(dst: Option<String>, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     let dst_path = dst.map(PathBuf::from).unwrap_or_else(|| open_file.path.clone());
     crate::save::save(&open_file.index, &open_file.overlay, &open_file.path, &dst_path)
         .map_err(|e| e.to_string())
@@ -158,10 +181,11 @@ pub fn set_cell(
     row: usize,
     col: usize,
     value: String,
+    tab_id: TabId,
     state: State<AppState>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     open_file.overlay.set(row, col, value);
     Ok(())
 }
@@ -171,25 +195,26 @@ pub fn set_cell(
 #[tauri::command]
 pub fn set_cells_batch(
     edits: Vec<(usize, usize, String)>,
+    tab_id: TabId,
     state: State<AppState>,
 ) -> Result<(), String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     open_file.overlay.set_many(edits);
     Ok(())
 }
 
 #[tauri::command]
-pub fn undo(state: State<AppState>) -> Result<bool, String> {
+pub fn undo(tab_id: TabId, state: State<AppState>) -> Result<bool, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     Ok(open_file.overlay.undo())
 }
 
 #[tauri::command]
-pub fn redo(state: State<AppState>) -> Result<bool, String> {
+pub fn redo(tab_id: TabId, state: State<AppState>) -> Result<bool, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_mut().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     Ok(open_file.overlay.redo())
 }
 
@@ -199,10 +224,11 @@ pub fn search(
     from_row: usize,
     from_col: usize,
     direction: String,
+    tab_id: TabId,
     state: State<AppState>,
 ) -> Result<Option<(usize, usize)>, String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
     let result = if direction == "prev" {
         crate::search::find_prev(&open_file.index, &mut file, &query, from_row, from_col)
@@ -213,9 +239,9 @@ pub fn search(
 }
 
 #[tauri::command]
-pub fn count_matches(query: String, state: State<AppState>) -> Result<usize, String> {
+pub fn count_matches(query: String, tab_id: TabId, state: State<AppState>) -> Result<usize, String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     let mut file = File::open(&open_file.path).map_err(|e| e.to_string())?;
     Ok(crate::search::count_matches(&open_file.index, &mut file, &query))
 }
@@ -225,14 +251,33 @@ pub fn count_matches(query: String, state: State<AppState>) -> Result<usize, Str
 /// frontend already knows the field count of any row it has rendered, so
 /// column-only navigation is handled client-side without an IPC round trip.
 #[tauri::command]
-pub fn goto(row: usize, state: State<AppState>) -> Result<(), String> {
+pub fn goto(row: usize, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.as_ref().ok_or_else(|| "no file open".to_string())?;
+    let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     let row_count = open_file.index.row_count();
     if row >= row_count {
         return Err(format!("row {row} out of range (0..{row_count})"));
     }
     Ok(())
+}
+
+#[tauri::command]
+pub fn close_tab(tab_id: TabId, state: State<AppState>) -> Result<(), String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    guard.files.remove(&tab_id);
+    Ok(())
+}
+
+pub struct PendingOpen(pub std::sync::Mutex<Option<String>>);
+
+#[tauri::command]
+pub fn take_pending_open(state: State<PendingOpen>) -> Option<String> {
+    state.0.lock().unwrap().take()
+}
+
+pub fn is_csv_or_tsv(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.ends_with(".csv") || lower.ends_with(".tsv")
 }
 
 #[cfg(test)]

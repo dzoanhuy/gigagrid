@@ -30,6 +30,20 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
+    ],
+    "fileAssociations": [
+      {
+        "ext": ["csv"],
+        "name": "CSV File",
+        "description": "Comma-separated values file",
+        "role": "Editor"
+      },
+      {
+        "ext": ["tsv"],
+        "name": "TSV File",
+        "description": "Tab-separated values file",
+        "role": "Editor"
+      }
     ]
   }
 }
