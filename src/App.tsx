@@ -1,13 +1,18 @@
 import "./App.css";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Grid, type GridHandle } from "./components/Grid";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { StatusBar, type GridStats } from "./components/StatusBar";
 import { loadSettings, saveSettings, type Settings, type Theme } from "./settings";
+import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin } from "./icons";
+
+const MAX_TABS = 10;
 
 interface FileMeta {
+  tab_id: number;
   path: string;
   row_count: number;
   format: string;
@@ -15,42 +20,75 @@ interface FileMeta {
   line_ending: string;
 }
 
+interface Tab {
+  meta: FileMeta;
+  error: string | null;
+  saving: boolean;
+  savedAt: Date | null;
+  stats: GridStats;
+  showSearch: boolean;
+  dirty: boolean;
+}
+
+const EMPTY_STATS: GridStats = { totalCols: 0, cursor: null, selection: null };
+
 function App() {
-  const [file, setFile] = useState<FileMeta | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-  const [savedAt, setSavedAt] = useState<Date | null>(null);
+  const [tabs, setTabs] = useState<Tab[]>([]);
+  const [activeTabId, setActiveTabId] = useState<number | null>(null);
+  const [openError, setOpenError] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
-  const [stats, setStats] = useState<GridStats>({ totalCols: 0, cursor: null, selection: null });
-  const [showSearch, setShowSearch] = useState(false);
-  const gridRef = useRef<GridHandle>(null);
-  const toolbarRef = useRef<ToolbarHandle>(null);
+  const gridRefs = useRef<Map<number, GridHandle>>(new Map());
+  const toolbarRefs = useRef<Map<number, ToolbarHandle>>(new Map());
+
+  const activeTab = tabs.find((t) => t.meta.tab_id === activeTabId) ?? null;
 
   useEffect(() => {
     document.documentElement.dataset.theme = settings.theme;
   }, [settings.theme]);
 
   useEffect(() => {
+    invoke<string | null>("take_pending_open").then((path) => {
+      if (path) openFileAsNewTab(path);
+    });
+    const unlisten = listen<string>("open-file", (event) => {
+      openFileAsNewTab(event.payload);
+    });
+    return () => {
+      unlisten.then((f) => f());
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function toggleSearch(tabId: number) {
+    setTabs((prev) =>
+      prev.map((t) => {
+        if (t.meta.tab_id !== tabId) return t;
+        const next = !t.showSearch;
+        if (next) window.setTimeout(() => toolbarRefs.current.get(tabId)?.focusSearch(), 0);
+        return { ...t, showSearch: next };
+      }),
+    );
+  }
+
+  useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod || !file) return;
+      if (!mod || activeTabId === null) return;
       if (e.key === "f") {
         e.preventDefault();
-        setShowSearch((prev) => {
-          const next = !prev;
-          if (next) window.setTimeout(() => toolbarRef.current?.focusSearch(), 0);
-          return next;
-        });
+        toggleSearch(activeTabId);
       } else if (e.key === "g") {
         e.preventDefault();
-        if (!showSearch) return;
-        if (e.shiftKey) toolbarRef.current?.findPrev();
-        else toolbarRef.current?.findNext();
+        const tab = tabs.find((t) => t.meta.tab_id === activeTabId);
+        if (!tab?.showSearch) return;
+        const handle = toolbarRefs.current.get(activeTabId);
+        if (e.shiftKey) handle?.findPrev();
+        else handle?.findNext();
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [file, showSearch]);
+  }, [activeTabId, tabs]);
 
   function updateSettings(patch: Partial<Settings>) {
     setSettings((prev) => {
@@ -60,94 +98,202 @@ function App() {
     });
   }
 
+  function cycleTheme() {
+    const order: Theme[] = ["system", "light", "dark"];
+    const next = order[(order.indexOf(settings.theme) + 1) % order.length];
+    updateSettings({ theme: next });
+  }
+
+  function updateTab(tabId: number, patch: Partial<Tab>) {
+    setTabs((prev) => prev.map((t) => (t.meta.tab_id === tabId ? { ...t, ...patch } : t)));
+  }
+
+  async function openFileAsNewTab(path: string) {
+    try {
+      const meta = await invoke<FileMeta>("open_file", { path });
+      setOpenError(null);
+      setTabs((prev) => [
+        ...prev,
+        { meta, error: null, saving: false, savedAt: null, stats: EMPTY_STATS, showSearch: false, dirty: false },
+      ]);
+      setActiveTabId(meta.tab_id);
+    } catch (e) {
+      setOpenError(String(e));
+    }
+  }
+
   async function openFile() {
     const selected = await open({
       multiple: false,
       filters: [{ name: "CSV", extensions: ["csv"] }],
     });
     if (!selected || Array.isArray(selected)) return;
-    try {
-      const meta = await invoke<FileMeta>("open_file", { path: selected });
-      setError(null);
-      setSavedAt(null);
-      setFile(meta);
-    } catch (e) {
-      setError(String(e));
+    await openFileAsNewTab(selected);
+  }
+
+  async function closeTab(tabId: number) {
+    const tab = tabs.find((t) => t.meta.tab_id === tabId);
+    if (tab?.dirty) {
+      const ok = window.confirm(`"${tab.meta.path}" còn thay đổi chưa lưu. Đóng tab và bỏ các thay đổi này?`);
+      if (!ok) return;
+    }
+    await invoke("close_tab", { tabId });
+    gridRefs.current.delete(tabId);
+    toolbarRefs.current.delete(tabId);
+    const remaining = tabs.filter((t) => t.meta.tab_id !== tabId);
+    setTabs(remaining);
+    if (activeTabId === tabId) {
+      setActiveTabId(remaining.length > 0 ? remaining[remaining.length - 1].meta.tab_id : null);
     }
   }
 
-  async function saveFile() {
-    setSaving(true);
+  async function saveFile(tabId: number) {
+    updateTab(tabId, { saving: true });
     try {
-      await invoke("save_file", { dst: null });
-      setError(null);
-      setSavedAt(new Date());
+      await invoke("save_file", { tabId, dst: null });
+      updateTab(tabId, { saving: false, savedAt: new Date(), error: null, dirty: false });
     } catch (e) {
-      setError(String(e));
-    } finally {
-      setSaving(false);
+      updateTab(tabId, { saving: false, error: String(e) });
     }
   }
 
-  function handleNavigate(row: number, col?: number) {
-    if (col !== undefined) {
-      gridRef.current?.selectCell(row, col);
-    } else {
-      gridRef.current?.scrollToRow(row);
-    }
+  function handleNavigateFor(tabId: number, row: number, col?: number) {
+    const handle = gridRefs.current.get(tabId);
+    if (col !== undefined) handle?.selectCell(row, col);
+    else handle?.scrollToRow(row);
   }
+
+  const ThemeIcon = settings.theme === "system" ? IconMonitor : settings.theme === "light" ? IconSun : IconMoon;
 
   return (
     <main style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
-      <div style={{ padding: 8, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <button onClick={openFile}>Open file</button>
-        <select
-          value={settings.theme}
-          onChange={(e) => updateSettings({ theme: e.currentTarget.value as Theme })}
-        >
-          <option value="system">System</option>
-          <option value="light">Light</option>
-          <option value="dark">Dark</option>
-        </select>
-        <label>
-          <input
-            type="checkbox"
-            checked={settings.showGridChrome}
-            onChange={(e) => updateSettings({ showGridChrome: e.currentTarget.checked })}
-          />
-          Grid
-        </label>
-        <label>
-          <input
-            type="checkbox"
-            checked={settings.freezeHeader}
-            onChange={(e) => updateSettings({ freezeHeader: e.currentTarget.checked })}
-          />
-          Freeze header
-        </label>
-        {file && (
-          <button onClick={saveFile} disabled={saving}>
-            {saving ? "Saving…" : "Save"}
+      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", borderBottom: "1px solid var(--border)" }}>
+        <div style={{ display: "flex", gap: 4, overflowX: "auto", flex: 1, minWidth: 0 }}>
+          {tabs.map((tab) => (
+            <div
+              key={tab.meta.tab_id}
+              onClick={() => setActiveTabId(tab.meta.tab_id)}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 4,
+                padding: "4px 8px",
+                cursor: "pointer",
+                borderBottom: tab.meta.tab_id === activeTabId ? "2px solid var(--fg)" : "2px solid transparent",
+                opacity: tab.meta.tab_id === activeTabId ? 1 : 0.6,
+                maxWidth: 200,
+                flexShrink: 0,
+              }}
+              title={tab.meta.path}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {tab.meta.path.split(/[\\/]/).pop()}
+                {tab.dirty ? " •" : ""}
+              </span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  closeTab(tab.meta.tab_id);
+                }}
+                style={{ lineHeight: 1 }}
+              >
+                ×
+              </button>
+            </div>
+          ))}
+        </div>
+        {activeTab?.savedAt && (
+          <span style={{ opacity: 0.6, fontSize: 12, flexShrink: 0 }}>
+            Saved {activeTab.savedAt.toLocaleTimeString()}
+          </span>
+        )}
+        {activeTab?.error && (
+          <span style={{ color: "red", fontSize: 12, flexShrink: 0 }}>{activeTab.error}</span>
+        )}
+        {openError && <span style={{ color: "red", fontSize: 12, flexShrink: 0 }}>{openError}</span>}
+        {tabs.map((tab) => (
+          <div
+            key={tab.meta.tab_id}
+            style={{
+              display: tab.meta.tab_id === activeTabId ? "flex" : "none",
+              gap: 4,
+              alignItems: "center",
+              flexShrink: 0,
+            }}
+          >
+            <Toolbar
+              ref={(handle) => {
+                if (handle) toolbarRefs.current.set(tab.meta.tab_id, handle);
+                else toolbarRefs.current.delete(tab.meta.tab_id);
+              }}
+              tabId={tab.meta.tab_id}
+              visible={tab.showSearch}
+              onNavigate={(row, col) => handleNavigateFor(tab.meta.tab_id, row, col)}
+              onToggleSearch={() => toggleSearch(tab.meta.tab_id)}
+            />
+          </div>
+        ))}
+        <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+          <button className="icon-btn" title="Open file" onClick={openFile} disabled={tabs.length >= MAX_TABS}>
+            <IconFolder />
           </button>
-        )}
-        {file && <Toolbar ref={toolbarRef} visible={showSearch} onNavigate={handleNavigate} />}
-        {savedAt && <span style={{ opacity: 0.6 }}>Saved {savedAt.toLocaleTimeString()}</span>}
-        {error && <span style={{ color: "red" }}>{error}</span>}
+          {activeTab && (
+            <button
+              className="icon-btn"
+              title={activeTab.saving ? "Saving…" : "Save"}
+              onClick={() => saveFile(activeTab.meta.tab_id)}
+              disabled={activeTab.saving}
+            >
+              <IconSave />
+            </button>
+          )}
+          <button className="icon-btn" title={`Theme: ${settings.theme} (click to change)`} onClick={cycleTheme}>
+            <ThemeIcon />
+          </button>
+          <button
+            className="icon-btn"
+            data-active={settings.showGridChrome}
+            title="Toggle grid lines"
+            onClick={() => updateSettings({ showGridChrome: !settings.showGridChrome })}
+          >
+            <IconGrid />
+          </button>
+          <button
+            className="icon-btn"
+            data-active={settings.freezeHeader}
+            title="Toggle freeze header"
+            onClick={() => updateSettings({ freezeHeader: !settings.freezeHeader })}
+          >
+            <IconPin />
+          </button>
+        </div>
       </div>
-      <div style={{ flex: 1, minHeight: 0 }}>
-        {file && (
-          <Grid
-            key={file.path}
-            ref={gridRef}
-            rowCount={file.row_count}
-            showGridChrome={settings.showGridChrome}
-            freezeHeader={settings.freezeHeader}
-            onStatsChange={setStats}
-            onError={setError}
-          />
-        )}
-      </div>
-      {file && <StatusBar file={file} stats={stats} />}
+      {tabs.map((tab) => {
+        const isActive = tab.meta.tab_id === activeTabId;
+        return (
+          <div
+            key={tab.meta.tab_id}
+            style={{ display: isActive ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}
+          >
+            <div style={{ flex: 1, minHeight: 0 }}>
+              <Grid
+                ref={(handle) => {
+                  if (handle) gridRefs.current.set(tab.meta.tab_id, handle);
+                  else gridRefs.current.delete(tab.meta.tab_id);
+                }}
+                tabId={tab.meta.tab_id}
+                rowCount={tab.meta.row_count}
+                showGridChrome={settings.showGridChrome}
+                freezeHeader={settings.freezeHeader}
+                onStatsChange={(stats) => updateTab(tab.meta.tab_id, { stats })}
+                onDirtyChange={(dirty) => updateTab(tab.meta.tab_id, { dirty })}
+                onError={(message) => updateTab(tab.meta.tab_id, { error: message })}
+              />
+            </div>
+            <StatusBar file={tab.meta} stats={tab.stats} />
+          </div>
+        );
+      })}
     </main>
   );
 }

@@ -66,10 +66,12 @@ export async function fetchRowsInChunks(
 }
 
 interface GridProps {
+  tabId: number;
   rowCount: number;
   showGridChrome: boolean;
   freezeHeader: boolean;
   onStatsChange?: (stats: GridStats) => void;
+  onDirtyChange?: (dirty: boolean) => void;
   onError?: (message: string | null) => void;
 }
 
@@ -84,7 +86,7 @@ interface CellPos {
   col: number;
 }
 
-export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, showGridChrome, freezeHeader, onStatsChange, onError }, ref) {
+export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, onStatsChange, onDirtyChange, onError }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -233,7 +235,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
 
     if (fetchTimer.current !== null) window.clearTimeout(fetchTimer.current);
     fetchTimer.current = window.setTimeout(() => {
-      invoke<string[][]>("get_rows", { start: fetchStart, count: range.count }).then(
+      invoke<string[][]>("get_rows", { tabId, start: fetchStart, count: range.count }).then(
         (rows) => {
           setRowsByIndex((prev) => {
             const next = prev.size > MAX_CACHE_ROWS ? new Map<number, string[]>() : new Map(prev);
@@ -249,14 +251,14 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
   useEffect(() => {
     if (!freezeHeader || rowCount === 0) return;
     if (rowsByIndex.has(0)) return;
-    invoke<string[][]>("get_rows", { start: 0, count: 1 }).then((rows) => {
+    invoke<string[][]>("get_rows", { tabId, start: 0, count: 1 }).then((rows) => {
       if (!rows[0]) return;
       setRowsByIndex((prev) => new Map(prev).set(0, rows[0]));
     });
   }, [freezeHeader, rowCount]);
 
   function commitCell(rowIndex: number, colIndex: number, value: string) {
-    invoke("set_cell", { row: rowIndex, col: colIndex, value }).then(() => {
+    invoke("set_cell", { tabId, row: rowIndex, col: colIndex, value }).then(() => {
       // Optimistic local update — get_rows already merges the overlay, but
       // we don't want the cell to flash back to the stale raw value while
       // waiting for a future refetch (this phase's Risk: overlay must be
@@ -270,6 +272,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
         next.set(rowIndex, updated);
         return next;
       });
+      onDirtyChange?.(true);
     });
   }
 
@@ -339,7 +342,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
     const textPromise = (async () => {
       const totalRows = b.rowMax - b.rowMin + 1;
       const allRows = await fetchRowsInChunks(b.rowMin, totalRows, COPY_CHUNK_ROWS, (s, c) =>
-        invoke<string[][]>("get_rows", { start: s, count: c }),
+        invoke<string[][]>("get_rows", { tabId, start: s, count: c }),
       );
       const lines: string[] = [];
       for (const row of allRows) {
@@ -388,8 +391,9 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       // — chunk it so no single round trip is unreasonably large.
       for (let offset = 0; offset < edits.length; offset += COPY_CHUNK_ROWS) {
         const batch = edits.slice(offset, offset + COPY_CHUNK_ROWS);
-        await invoke("set_cells_batch", { edits: batch });
+        await invoke("set_cells_batch", { tabId, edits: batch });
       }
+      onDirtyChange?.(true);
       setRowsByIndex((prev) => {
         const next = new Map(prev);
         for (const [r, c, v] of edits) {
@@ -466,11 +470,11 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ rowCount, 
       await pasteSelection();
     } else if (e.key === "z" && e.shiftKey) {
       e.preventDefault();
-      await invoke("redo");
+      await invoke("redo", { tabId });
       invalidateCache();
     } else if (e.key === "z") {
       e.preventDefault();
-      await invoke("undo");
+      await invoke("undo", { tabId });
       invalidateCache();
     } else if (e.key === "a") {
       e.preventDefault();

@@ -22,6 +22,8 @@ export function StatusBar({ file, stats }: StatusBarProps) {
     <div
       style={{
         display: "flex",
+        justifyContent: "space-between",
+        alignItems: "center",
         gap: 16,
         padding: "2px 8px",
         borderTop: "1px solid var(--border)",
@@ -33,24 +35,26 @@ export function StatusBar({ file, stats }: StatusBarProps) {
         whiteSpace: "nowrap",
       }}
     >
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis" }} title={file.path}>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }} title={file.path}>
         {file.path}
       </span>
-      <span>{file.row_count.toLocaleString()} rows</span>
-      <span>{stats.totalCols} cols</span>
-      <span>{file.format}</span>
-      <span>{file.encoding}</span>
-      <span>{file.line_ending}</span>
-      {stats.cursor && (
-        <span>
-          cursor: R{stats.cursor.row + 1}, C{stats.cursor.col + 1}
-        </span>
-      )}
-      {stats.selection && stats.selection.rows * stats.selection.cols > 1 && (
-        <span>
-          selection: {stats.selection.rows} × {stats.selection.cols}
-        </span>
-      )}
+      <div style={{ display: "flex", gap: 16, flexShrink: 0 }}>
+        <span>{file.row_count.toLocaleString()} rows</span>
+        <span>{stats.totalCols} cols</span>
+        <span>{file.format}</span>
+        <span>{file.encoding}</span>
+        <span>{file.line_ending}</span>
+        {stats.cursor && (
+          <span>
+            cursor: R{stats.cursor.row + 1}, C{stats.cursor.col + 1}
+          </span>
+        )}
+        {stats.selection && stats.selection.rows * stats.selection.cols > 1 && (
+          <span>
+            selection: {stats.selection.rows} × {stats.selection.cols}
+          </span>
+        )}
+      </div>
     </div>
   );
 }

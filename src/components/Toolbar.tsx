@@ -1,11 +1,14 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { IconSearch, IconHash } from "../icons";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
 interface ToolbarProps {
+  tabId: number;
   visible: boolean;
   onNavigate: (row: number, col?: number) => void;
+  onToggleSearch: () => void;
 }
 
 export interface ToolbarHandle {
@@ -17,13 +20,15 @@ export interface ToolbarHandle {
 /** Search cell-by-cell across the whole file (Cmd/Ctrl+F to show+focus this
  * box, Cmd/Ctrl+G / Enter to jump to the next match, Shift+ variants for
  * the previous one) — the matched cell is selected in the grid, and a
- * running "N / total" count is shown next to the box. Goto row/col stays a
- * separate, always-visible mini-form. */
+ * running "N / total" count is shown next to the box. Goto row/col is a
+ * small popup opened from its own icon (closes itself after a successful
+ * jump or Escape), matching the "Go to Line" pattern of most editors. */
 export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
-  { visible, onNavigate },
+  { tabId, visible, onNavigate, onToggleSearch },
   ref,
 ) {
   const [query, setQuery] = useState("");
+  const [showGoto, setShowGoto] = useState(false);
   // col:0, not -1 — `fromCol` deserializes into a Rust `usize` on the
   // backend, which rejects a negative number outright (the whole `invoke`
   // call fails silently since nothing here used to .catch() it — count
@@ -61,6 +66,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   ) {
     if (!q) return;
     invoke<[number, number] | null>("search", {
+      tabId,
       query: q,
       fromRow: from.row,
       fromCol: from.col,
@@ -101,7 +107,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     }
     if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
     debounceRef.current = window.setTimeout(() => {
-      invoke<number>("count_matches", { query }).then(setTotalMatches);
+      invoke<number>("count_matches", { tabId, query }).then(setTotalMatches);
       runSearch(query, { row: 0, col: 0 }, "next", true);
     }, SEARCH_DEBOUNCE_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -112,7 +118,10 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     const row = parseInt(gotoRow, 10);
     if (Number.isNaN(row)) return;
     const col = gotoCol ? parseInt(gotoCol, 10) : undefined;
-    invoke("goto", { row }).then(() => onNavigate(row, col));
+    invoke("goto", { tabId, row }).then(() => {
+      onNavigate(row, col);
+      setShowGoto(false);
+    });
   }
 
   return (
@@ -129,6 +138,8 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
                 e.preventDefault();
                 if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
                 runSearch(query, cursor, e.shiftKey ? "prev" : "next");
+              } else if (e.key === "Escape") {
+                onToggleSearch();
               }
             }}
             style={{ width: 140 }}
@@ -144,21 +155,51 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
           )}
         </div>
       )}
-      <form onSubmit={submitGoto} style={{ display: "flex", gap: 4 }}>
-        <input
-          placeholder="Row"
-          value={gotoRow}
-          onChange={(e) => setGotoRow(e.currentTarget.value)}
-          style={{ width: 70 }}
-        />
-        <input
-          placeholder="Col"
-          value={gotoCol}
-          onChange={(e) => setGotoCol(e.currentTarget.value)}
-          style={{ width: 50 }}
-        />
-        <button type="submit">Go</button>
-      </form>
+      <button className="icon-btn" data-active={visible} title="Search (Cmd/Ctrl+F)" onClick={onToggleSearch}>
+        <IconSearch />
+      </button>
+      <div style={{ position: "relative" }}>
+        <button className="icon-btn" data-active={showGoto} title="Go to row/col" onClick={() => setShowGoto((v) => !v)}>
+          <IconHash />
+        </button>
+        {showGoto && (
+          <form
+            onSubmit={submitGoto}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") setShowGoto(false);
+            }}
+            style={{
+              position: "absolute",
+              top: "calc(100% + 4px)",
+              right: 0,
+              zIndex: 10,
+              display: "flex",
+              gap: 4,
+              padding: 6,
+              background: "var(--bg)",
+              border: "1px solid var(--border)",
+              borderRadius: 4,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+            }}
+          >
+            {/* eslint-disable-next-line jsx-a11y/no-autofocus */}
+            <input
+              autoFocus
+              placeholder="Row"
+              value={gotoRow}
+              onChange={(e) => setGotoRow(e.currentTarget.value)}
+              style={{ width: 70 }}
+            />
+            <input
+              placeholder="Col"
+              value={gotoCol}
+              onChange={(e) => setGotoCol(e.currentTarget.value)}
+              style={{ width: 50 }}
+            />
+            <button type="submit">Go</button>
+          </form>
+        )}
+      </div>
     </>
   );
 });
