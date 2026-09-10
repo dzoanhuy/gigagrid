@@ -105,10 +105,16 @@ window.__TAURI_INTERNALS__ = {
     if (cmd === "set_cell" || cmd === "set_cells_batch") return null;
     if (cmd === "undo" || cmd === "redo") return false;
     if (cmd === "save_file") return null;
+    if (cmd === "take_pending_open") return null;
+    if (cmd === "plugin:event|listen") return 1;
+    if (cmd === "plugin:event|unlisten") return null;
     return null;
   },
   transformCallback: (cb) => cb,
   unregisterCallback: () => {},
+};
+window.__TAURI_EVENT_PLUGIN_INTERNALS__ = {
+  unregisterListener: () => {},
 };
 `;
 
@@ -134,7 +140,7 @@ async function main() {
     await page.addInitScript(INIT_SCRIPT);
     await page.goto(URL);
 
-    await page.click("text=Open file");
+    await page.click('button[title="Open file"]');
     await page.waitForSelector("text=rows", { timeout: 5000 });
     await page.waitForTimeout(500); // let get_rows fetch + render settle
 
@@ -626,6 +632,119 @@ async function main() {
       barCoverage.headerBarWidth >= barCoverage.scrollWidth - 1 ? "COVERS FULL WIDTH (fixed)" : "GAP STILL PRESENT (bug)",
     );
     await page.screenshot({ path: path.join(OUT_DIR, "header-bg-scrolled-right.png") });
+
+    // --- Check 12: Enter opens the edit box on the LAST-selected cell and
+    // clears the multi-cell selection highlight ---
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 0;
+      document.querySelector("[data-gigagrid-scroll]").scrollLeft = 0;
+    });
+    await page.waitForTimeout(200);
+    const rowsForEnter = await page.$$(rowSelector);
+    const targetCell6 = async (rIdx, cIdx) => {
+      const cells = await rowsForEnter[rIdx].$$(":scope > div");
+      const dataCellsOnly = [];
+      for (const c of cells) {
+        const pos = await c.evaluate((el) => getComputedStyle(el).position);
+        if (pos !== "sticky") dataCellsOnly.push(c);
+      }
+      return dataCellsOnly[cIdx];
+    };
+    const rangeStart = await targetCell6(1, 0);
+    await rangeStart.click();
+    const rangeEnd = await targetCell6(3, 2);
+    await rangeEnd.click({ modifiers: ["Shift"] });
+    await page.waitForTimeout(150);
+    console.log("Selection before Enter (expect a multi-cell range):", await selectionText());
+
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(200);
+    const editingAfterEnter = await page.evaluate(() => {
+      const ta = document.querySelector("textarea");
+      return ta ? { present: true, value: ta.value } : { present: false };
+    });
+    console.log("Textarea after Enter on a multi-cell selection (expect present:true, value = cell(3,2)'s):", editingAfterEnter);
+
+    const selectedCountAfterEnter = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll('[data-gigagrid-scroll] > div:last-child > div'));
+      let n = 0;
+      for (const rowEl of rows) {
+        for (const c of rowEl.children) {
+          if (getComputedStyle(c).backgroundColor.includes("70, 130, 255")) n++;
+        }
+      }
+      return n;
+    });
+    console.log("Highlighted (non-editing) cells after Enter (expect 0 — selection collapsed):", selectedCountAfterEnter);
+    await page.screenshot({ path: path.join(OUT_DIR, "enter-opens-edit.png") });
+
+    // --- Check 13: while editing, Cmd+A selects the FIELD's text, not the
+    // grid's cells; arrow keys move the caret, not the grid cursor ---
+    const selectAllOnFocus = await page.evaluate(() => {
+      const ta = document.querySelector("textarea");
+      return ta ? { selStart: ta.selectionStart, selEnd: ta.selectionEnd, len: ta.value.length } : null;
+    });
+    console.log("Textarea selection right when edit opens (auto-select-all on focus):", selectAllOnFocus);
+
+    await page.keyboard.type("EDITEDVALUE");
+    await page.waitForTimeout(100);
+    await page.keyboard.press("Meta+a");
+    await page.waitForTimeout(100);
+    const cmdAWhileEditing = await page.evaluate(() => {
+      const ta = document.querySelector("textarea");
+      return ta
+        ? { selStart: ta.selectionStart, selEnd: ta.selectionEnd, len: ta.value.length, activeIsTextarea: document.activeElement === ta }
+        : null;
+    });
+    console.log("Textarea selection after Cmd+A while editing (expect selStart:0, selEnd:len, activeIsTextarea:true):", cmdAWhileEditing);
+    const gridSelectionDuringEdit = await page.evaluate(() => {
+      const rows = Array.from(document.querySelectorAll('[data-gigagrid-scroll] > div:last-child > div'));
+      let n = 0;
+      for (const rowEl of rows) {
+        for (const c of rowEl.children) {
+          if (getComputedStyle(c).backgroundColor.includes("70, 130, 255")) n++;
+        }
+      }
+      return n;
+    });
+    console.log("Grid-level highlighted cells after Cmd+A while editing (expect 0 — grid select-all did NOT fire):", gridSelectionDuringEdit);
+
+    await page.keyboard.press("Home");
+    await page.keyboard.press("ArrowRight");
+    await page.keyboard.press("ArrowRight");
+    const caretAfterArrows = await page.evaluate(() => {
+      const ta = document.querySelector("textarea");
+      return ta ? ta.selectionStart : null;
+    });
+    console.log("Caret position after Home + 2x ArrowRight while editing (expect 2 — moved within the field):", caretAfterArrows);
+
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(200);
+    const editingClosedAfterEscape = await page.evaluate(() => !document.querySelector("textarea"));
+    const cellTextAfterCancel = await targetCell6(3, 2).then((c) => c.evaluate((el) => el.textContent));
+    console.log("Edit box closed after Escape:", editingClosedAfterEscape);
+    console.log("Cell(3,2) text after typed+Escape (expect ORIGINAL value, edit cancelled, not 'EDITEDVALUE'):", cellTextAfterCancel);
+
+    // --- Check 14: Enter on a SINGLE selected cell (no range) edits that
+    // cell, and a second Enter commits the new value ---
+    const singleCell = await targetCell6(5, 1);
+    await singleCell.click();
+    await page.waitForTimeout(150);
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(150);
+    await page.keyboard.press("Meta+a");
+    await page.keyboard.type("COMMITTED-VIA-ENTER");
+    await page.keyboard.press("Enter");
+    await page.waitForTimeout(200);
+    const cellTextAfterCommit = await targetCell6(5, 1).then((c) => c.evaluate((el) => el.textContent));
+    const editingClosedAfterCommit = await page.evaluate(() => !document.querySelector("textarea"));
+    console.log("Cell(5,1) text after Enter-edit + Cmd+A + type + Enter (expect 'COMMITTED-VIA-ENTER'):", cellTextAfterCommit);
+    console.log("Edit box closed after commit:", editingClosedAfterCommit);
+    // arrow keys should work again right after commit (focus returned to grid)
+    await page.keyboard.press("ArrowDown");
+    await page.waitForTimeout(150);
+    console.log("Cursor after ArrowDown right after commit (expect it moved, proving focus returned to the grid):", await cursorText());
+    await page.screenshot({ path: path.join(OUT_DIR, "enter-commit-then-arrow.png") });
 
     await browser.close();
   } finally {
