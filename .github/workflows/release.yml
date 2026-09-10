@@ -5,6 +5,13 @@ on:
     tags:
       - "v*.*.*"
 
+# tauri-action creates the draft GitHub Release via the GITHUB_TOKEN — new
+# repos default that token to read-only, which fails release creation with
+# "Resource not accessible by integration". This grants exactly the write
+# this workflow needs, nothing more.
+permissions:
+  contents: write
+
 jobs:
   release:
     # Default fail-fast (true): if one OS leg fails, the run is marked
