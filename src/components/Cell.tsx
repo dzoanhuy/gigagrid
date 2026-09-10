@@ -119,6 +119,7 @@ export function Cell({ value, editing, onRequestEdit, onCommit, onEditEnd, onOve
     <div
       onDoubleClick={onRequestEdit}
       style={{
+        boxSizing: "border-box",
         padding: "0 6px",
         whiteSpace: "nowrap",
         overflow: "hidden",

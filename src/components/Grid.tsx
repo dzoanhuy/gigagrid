@@ -96,6 +96,18 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
   const [selEnd, setSelEnd] = useState<CellPos | null>(null);
   const [editingCell, setEditingCell] = useState<CellPos | null>(null);
   const [rowHeight, setRowHeight] = useState(ROW_HEIGHT);
+  // App.tsx passes an inline `(stats) => updateTab(...)` — a new function
+  // identity every App render, independent of whether selection/data
+  // actually changed. Reading it through a ref (instead of putting it in
+  // the stats-effect's own deps below) means that effect only re-runs when
+  // the SELECTION/DATA changes, not on every App render — including the
+  // App render its own last call just triggered, which previously formed
+  // an infinite effect->setState->render->effect loop ("Maximum update
+  // depth exceeded").
+  const onStatsChangeRef = useRef(onStatsChange);
+  useEffect(() => {
+    onStatsChangeRef.current = onStatsChange;
+  });
   const [colWidths, setColWidths] = useState<Record<number, number>>({});
   const selectingRef = useRef(false);
 
@@ -303,13 +315,13 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
   useEffect(() => {
     const b = selectionBounds();
     const colCount = rowsByIndex.get(0)?.length ?? 0;
-    onStatsChange?.({
+    onStatsChangeRef.current?.({
       totalCols: colCount,
       cursor: selEnd,
       selection: b ? { rows: b.rowMax - b.rowMin + 1, cols: b.colMax - b.colMin + 1 } : null,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selStart, selEnd, rowsByIndex, onStatsChange]);
+  }, [selStart, selEnd, rowsByIndex]);
 
   function isSelected(row: number, col: number) {
     const b = selectionBounds();
