@@ -1,6 +1,9 @@
 // Ad-hoc visual/layout smoke test for gigagrid: drives the Vite dev server in
-// headless Chromium with a mocked Tauri IPC bridge (no native window needed),
-// checks column-width consistency + shift-click selection rectangle.
+// headless Chromium with a mocked Tauri IPC bridge (no native window needed).
+// Covers the whole app incrementally — every feature lands here as it's
+// built. MAINTENANCE: when a plan/phase adds a gigagrid feature, add its
+// check(s) to this file (new IPC mock handlers as needed) rather than a
+// throwaway script — this is the one standing UI regression suite.
 import { chromium } from "playwright";
 import { spawn } from "node:child_process";
 import http from "node:http";
@@ -46,19 +49,58 @@ window.__TAURI_INTERNALS__ = {
             return Array.from({ length: 40 }, (_, i) => "line " + (i + 1)).join("\\n");
           if (r === 5 && c === 2) return "needle-match-one";
           if (r === 30 && c === 0) return "needle-match-two";
+          if (r === 40) return c === 0 ? "r40-malformed" : undefined; // ragged row: 1 col vs canonical 5, for the malformed-row-flag check
+          if (r === 45 && c === 1) return "filter-me-only"; // unique needle for the filter check, untouched by the Replace/Replace-All checks above
           return "r" + r + "c" + c + "_" + "x".repeat((r * 3 + c * 2) % 15);
-        })
+        }).filter((v) => v !== undefined)
       );
     }
     const rows = window.__mockRows__;
+    window.__sortCol__ = window.__sortCol__ ?? null;
+    window.__filterQuery__ = window.__filterQuery__ ?? "";
+    window.__view__ = window.__view__ ?? null;
+    function __computeView__() {
+      let idxs = rows.map((_, i) => i);
+      if (window.__filterQuery__) idxs = idxs.filter((i) => rows[i].some((cell) => (cell || "").includes(window.__filterQuery__)));
+      if (window.__sortCol__ !== null) idxs = idxs.slice().sort((a, b) => (rows[a][window.__sortCol__] || "").localeCompare(rows[b][window.__sortCol__] || ""));
+      return idxs;
+    }
+    function __viewLen__() { return window.__view__ ? window.__view__.length : rows.length; }
     if (cmd === "plugin:dialog|open") return "/mock/test.csv";
-    if (cmd === "open_file")
-      return { path: "/mock/test.csv", row_count: rows.length, format: "CSV", encoding: "UTF-8", line_ending: "LF" };
+    if (cmd === "open_file") {
+      window.__lastOpenDelimiter__ = args.delimiter ?? null;
+      return { path: "/mock/test.csv", row_count: __viewLen__(), format: args.delimiter === "\\t" ? "TSV" : "CSV", encoding: "UTF-8", line_ending: "LF" };
+    }
     if (cmd === "get_rows") {
       const start = args.start, count = args.count;
       window.__getRowsCalls__ = window.__getRowsCalls__ || [];
       window.__getRowsCalls__.push({ start, count });
-      return rows.slice(start, start + count);
+      const total = window.__view__ ? window.__view__.length : rows.length;
+      const end = Math.min(start + count, total);
+      const out = [];
+      for (let i = start; i < end; i++) out.push(rows[window.__view__ ? window.__view__[i] : i]);
+      return out;
+    }
+    if (cmd === "set_filter") {
+      window.__filterQuery__ = args.query || "";
+      window.__view__ = (window.__filterQuery__ || window.__sortCol__ !== null) ? __computeView__() : null;
+      return __viewLen__();
+    }
+    if (cmd === "set_sort") {
+      window.__sortCol__ = args.col;
+      window.__view__ = __computeView__();
+      return __viewLen__();
+    }
+    if (cmd === "clear_sort") {
+      window.__sortCol__ = null;
+      window.__view__ = window.__filterQuery__ ? __computeView__() : null;
+      return __viewLen__();
+    }
+    if (cmd === "clear_view") {
+      window.__sortCol__ = null;
+      window.__filterQuery__ = "";
+      window.__view__ = null;
+      return null;
     }
     if (cmd === "count_matches") {
       if (!args.query) return 0;
@@ -181,6 +223,10 @@ async function main() {
       permissions: ["clipboard-read", "clipboard-write"],
     });
     const page = await context.newPage();
+    // Playwright auto-DISMISSES native dialogs by default — the app uses
+    // window.confirm for "discard unsaved changes?" (close tab, reopen with
+    // a different delimiter); accept so those flows actually proceed here.
+    page.on("dialog", (dialog) => dialog.accept());
     await page.addInitScript(INIT_SCRIPT);
     await page.goto(URL);
 
@@ -952,6 +998,147 @@ async function main() {
     await page.waitForTimeout(300);
     console.log("Column count after 'Delete column' (expect back to 5):", await colCountFromRow());
     await page.screenshot({ path: path.join(OUT_DIR, "row-col-context-menu.png") });
+
+    // --- Check 17: malformed-row flag (row 40 is ragged: 1 col vs canonical
+    // 5) — its gutter cell should carry a warning tooltip once scrolled in.
+    await page.evaluate(() => {
+      document.querySelector("[data-gigagrid-scroll]").scrollTop = 40 * 28;
+    });
+    await page.waitForTimeout(400);
+    const malformedTitle = await page.evaluate(() => {
+      const gutters = Array.from(document.querySelectorAll('[data-gigagrid-scroll] > div:last-child > div'))
+        .map((rowEl) => rowEl.firstElementChild)
+        .filter(Boolean);
+      const withTitle = gutters.find((g) => g.getAttribute("title")?.includes("Expected"));
+      return withTitle ? withTitle.getAttribute("title") : null;
+    });
+    console.log("Malformed-row tooltip for row 40 (expect 'Expected 5 columns, got 1'):", malformedTitle);
+    await page.screenshot({ path: path.join(OUT_DIR, "malformed-row-flag.png") });
+    await page.evaluate(() => { document.querySelector("[data-gigagrid-scroll]").scrollTop = 0; });
+    await page.waitForTimeout(200);
+
+    // --- Check 18: filter narrows displayed rows + locks out edit/insert/
+    // delete/search while active, unlocks again once cleared.
+    await page.fill('input[placeholder="Filter…"]', "filter-me-only");
+    await page.waitForTimeout(400);
+    console.log("Row count after filtering to the unique needle (expect 1 rows):", await rowCountText());
+
+    const searchInputDisabledDuringFilter = await page.evaluate(
+      () => document.querySelector('input[placeholder="Search…"]')?.disabled,
+    );
+    console.log("Search input disabled while filter active (expect true):", searchInputDisabledDuringFilter);
+
+    // widen the filter so the scrollable area still has a row to right-click
+    // (a 1-row filtered view renders as the sticky frozen row only, leaving
+    // nothing in the scrollable area below it).
+    await page.fill('input[placeholder="Filter…"]', "c1_");
+    await page.waitForTimeout(400);
+    const rowsForLockCheck = await page.$$(rowSelector);
+    const gutterForLockCheck = await gutterAt(rowsForLockCheck, 0);
+    await gutterForLockCheck.click({ button: "right" });
+    await page.waitForTimeout(150);
+    const insertDisabledDuringFilter = await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Insert row above");
+      return btn ? btn.disabled : null;
+    });
+    console.log("'Insert row above' disabled while filter active (expect true):", insertDisabledDuringFilter);
+    await page.keyboard.press("Escape");
+
+    await page.fill('input[placeholder="Filter…"]', "");
+    await page.waitForTimeout(400);
+    console.log("Row count after clearing filter (expect 50 rows):", await rowCountText());
+    const searchEnabledAfterClear = await page.evaluate(
+      () => document.querySelector('input[placeholder="Search…"]')?.disabled,
+    );
+    console.log("Search input disabled after clearing filter (expect false):", searchEnabledAfterClear);
+    await page.screenshot({ path: path.join(OUT_DIR, "filter-active.png") });
+
+    // --- Check 19: "Sort by this column" (col 0, via column context menu)
+    // reorders rows; "Clear sort" restores original order.
+    const colHeaderForSort = await page.$('[data-gigagrid-scroll] > div:first-child > div:nth-child(2)');
+    const col0BeforeSort = await page.evaluate(() => window.__mockRows__[0][0]);
+    await colHeaderForSort.click({ button: "right" });
+    await page.waitForTimeout(150);
+    const sortMenuItems = await page.evaluate(() => Array.from(document.querySelectorAll("button")).map((b) => b.textContent));
+    console.log("Column context menu has Sort/Clear sort:", sortMenuItems.filter((t) => /sort/i.test(t || "")));
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Sort by this column");
+      btn.click();
+    });
+    await page.waitForTimeout(400);
+    const rowsAfterSort = await page.$$(rowSelector);
+    const cellAtPos5AfterSort = await (async () => {
+      const cells = await rowsAfterSort[4].$$(":scope > div");
+      for (const c of cells) if ((await c.evaluate((el) => getComputedStyle(el).position)) !== "sticky") return c.evaluate((el) => el.textContent);
+    })();
+    console.log("Scrollable-position-5 col-0 value after sort (expect it to differ from row 6's original 'r6c0_...' unsorted value):", cellAtPos5AfterSort);
+
+    const colHeaderForClearSort = await page.$('[data-gigagrid-scroll] > div:first-child > div:nth-child(2)');
+    await colHeaderForClearSort.click({ button: "right" });
+    await page.waitForTimeout(150);
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Clear sort");
+      btn.click();
+    });
+    await page.waitForTimeout(400);
+    const col0AfterClearSort = await page.evaluate(() => window.__mockRows__[0][0]);
+    console.log("Sort col-0 baseline unchanged by sort/clear-sort (expect equal):", col0BeforeSort === col0AfterClearSort);
+    await page.screenshot({ path: path.join(OUT_DIR, "sort-active.png") });
+
+    // --- Check 20: recent-files dropdown lists the opened file, click reopens it ---
+    const recentBtn = await page.$('button[title="Recent files"]');
+    console.log("Recent-files button enabled after a file was opened (expect true):", recentBtn ? !(await recentBtn.evaluate((b) => b.disabled)) : false);
+    await recentBtn.click();
+    await page.waitForTimeout(150);
+    const recentItems = await page.evaluate(() => Array.from(document.querySelectorAll("button")).map((b) => b.textContent).filter((t) => t === "test.csv"));
+    console.log("Recent-files dropdown lists 'test.csv':", recentItems.length > 0);
+    await page.screenshot({ path: path.join(OUT_DIR, "recent-files.png") });
+    await page.keyboard.press("Escape");
+
+    // --- Check 21: freeze N columns cycles 0->1->2->3->0, sticky applied/removed ---
+    const freezeBtn = await page.$('button[title*="Freeze"][title*="columns"]');
+    console.log("Freeze-columns button present:", !!freezeBtn);
+    await freezeBtn.click(); // 0 -> 1
+    await page.waitForTimeout(200);
+    const stickyAfterFreeze1 = await page.evaluate(() => {
+      const firstRow = document.querySelector('[data-gigagrid-scroll] > div:last-child > div');
+      const firstDataCell = firstRow ? Array.from(firstRow.children)[1] : null;
+      return firstDataCell ? getComputedStyle(firstDataCell).position : null;
+    });
+    console.log("First data column position after freezing 1 col (expect 'sticky'):", stickyAfterFreeze1);
+    await page.screenshot({ path: path.join(OUT_DIR, "freeze-cols.png") });
+    await freezeBtn.click(); // 1 -> 2
+    await freezeBtn.click(); // 2 -> 3
+    await freezeBtn.click(); // 3 -> 0
+    await page.waitForTimeout(200);
+    const positionAfterCycleBackTo0 = await page.evaluate(() => {
+      const firstRow = document.querySelector('[data-gigagrid-scroll] > div:last-child > div');
+      const firstDataCell = firstRow ? Array.from(firstRow.children)[1] : null;
+      return firstDataCell ? getComputedStyle(firstDataCell).position : null;
+    });
+    console.log("First data column position after cycling back to 0 (expect 'relative'):", positionAfterCycleBackTo0);
+
+    // --- Check 22: custom-delimiter reopen menu (format label in StatusBar) ---
+    const formatLabel = await page.evaluateHandle(() => {
+      const spans = Array.from(document.querySelectorAll("span"));
+      return spans.find((s) => s.textContent === "CSV" && s.style.cursor === "pointer") || null;
+    });
+    const formatLabelEl = formatLabel.asElement();
+    if (formatLabelEl) {
+      await formatLabelEl.click();
+      await page.waitForTimeout(150);
+      const delimMenuItems = await page.evaluate(() => Array.from(document.querySelectorAll("button")).map((b) => b.textContent));
+      console.log("Delimiter menu items (expect Comma/Tab/Semicolon/Pipe):", delimMenuItems.filter((t) => ["Comma", "Tab", "Semicolon", "Pipe"].includes(t || "")));
+      await page.evaluate(() => {
+        const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Semicolon");
+        btn.click();
+      });
+      await page.waitForTimeout(500);
+      console.log("Delimiter passed to reopened open_file call (expect ';'):", JSON.stringify(await page.evaluate(() => window.__lastOpenDelimiter__)));
+      await page.screenshot({ path: path.join(OUT_DIR, "delimiter-reopen.png") });
+    } else {
+      console.log("Check 22 SKIPPED: could not find the clickable format label");
+    }
 
     await browser.close();
   } finally {
