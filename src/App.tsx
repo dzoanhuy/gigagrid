@@ -8,8 +8,8 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { Grid, type GridHandle } from "./components/Grid";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { StatusBar, type GridStats } from "./components/StatusBar";
-import { loadSettings, saveSettings, type Settings, type Theme } from "./settings";
-import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin, IconDownload } from "./icons";
+import { loadSettings, saveSettings, pushRecentFile, type Settings, type Theme } from "./settings";
+import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin, IconDownload, IconClock } from "./icons";
 
 const MAX_TABS = 10;
 
@@ -42,6 +42,7 @@ function App() {
   const [openError, setOpenError] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [updateBusy, setUpdateBusy] = useState(false);
+  const [showRecent, setShowRecent] = useState(false);
   const gridRefs = useRef<Map<number, GridHandle>>(new Map());
   const toolbarRefs = useRef<Map<number, ToolbarHandle>>(new Map());
 
@@ -152,6 +153,7 @@ function App() {
     try {
       const meta = await invoke<FileMeta>("open_file", { path });
       setOpenError(null);
+      updateSettings({ recentFiles: pushRecentFile(settings.recentFiles, path) });
       setTabs((prev) => [
         ...prev,
         { meta, error: null, saving: false, savedAt: null, stats: EMPTY_STATS, showSearch: false, dirty: false, filterActive: false, sortActive: false },
@@ -285,9 +287,40 @@ function App() {
           </div>
         ))}
         <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-          <button className="icon-btn" title="Open file" onClick={openFile} disabled={tabs.length >= MAX_TABS}>
-            <IconFolder />
-          </button>
+          <div style={{ position: "relative" }}>
+            <button className="icon-btn" title="Open file" onClick={openFile} disabled={tabs.length >= MAX_TABS}>
+              <IconFolder />
+            </button>
+            <button
+              className="icon-btn"
+              title="Recent files"
+              onClick={() => setShowRecent((v) => !v)}
+              disabled={settings.recentFiles.length === 0}
+            >
+              <IconClock />
+            </button>
+            {showRecent && settings.recentFiles.length > 0 && (
+              <div
+                style={{
+                  position: "absolute", top: "calc(100% + 4px)", left: 0, zIndex: 10,
+                  display: "flex", flexDirection: "column", minWidth: 220,
+                  background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4,
+                  boxShadow: "0 2px 8px rgba(0,0,0,0.2)", padding: 4,
+                }}
+              >
+                {settings.recentFiles.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => { setShowRecent(false); openFileAsNewTab(p); }}
+                    style={{ textAlign: "left", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    title={p}
+                  >
+                    {p.split(/[\\/]/).pop()}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
           {activeTab && (
             <button
               className="icon-btn"
