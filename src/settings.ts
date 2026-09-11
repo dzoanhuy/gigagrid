@@ -28,6 +28,6 @@ export function saveSettings(settings: Settings): void {
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(settings));
   } catch {
-    // localStorage không dùng được (private mode, disabled) — setting chỉ không persist.
+    // localStorage unavailable (private mode, disabled) — settings just won't persist.
   }
 }

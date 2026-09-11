@@ -110,12 +110,12 @@ function App() {
       return;
     }
     if (!update) {
-      if (!silent) window.alert("Gigagrid đã là bản mới nhất.");
+      if (!silent) window.alert("Gigagrid is already up to date.");
       return;
     }
     const notes = update.body ? `\n\n${update.body}` : "";
     const ok = window.confirm(
-      `Có bản cập nhật mới: v${update.version}${notes}\n\nTải và cài đặt ngay? Ứng dụng sẽ khởi động lại.`,
+      `A new update is available: v${update.version}${notes}\n\nDownload and install now? The app will restart.`,
     );
     if (!ok) return;
     setUpdateBusy(true);
@@ -172,7 +172,7 @@ function App() {
   async function closeTab(tabId: number) {
     const tab = tabs.find((t) => t.meta.tab_id === tabId);
     if (tab?.dirty) {
-      const ok = window.confirm(`"${tab.meta.path}" còn thay đổi chưa lưu. Đóng tab và bỏ các thay đổi này?`);
+      const ok = window.confirm(`"${tab.meta.path}" has unsaved changes. Close tab and discard them?`);
       if (!ok) return;
     }
     await invoke("close_tab", { tabId });
@@ -316,7 +316,7 @@ function App() {
           </button>
           <button
             className="icon-btn"
-            title={updateBusy ? "Đang cập nhật…" : "Check for updates"}
+            title={updateBusy ? "Updating…" : "Check for updates"}
             onClick={() => checkAndPromptUpdate(false)}
             disabled={updateBusy}
           >

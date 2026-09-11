@@ -1,5 +1,10 @@
 # Gigagrid
 
+[![CI](https://github.com/dzoanhuy/gigagrid/actions/workflows/ci.yml/badge.svg)](https://github.com/dzoanhuy/gigagrid/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/dzoanhuy/gigagrid)](https://github.com/dzoanhuy/gigagrid/releases/latest)
+[![License: MIT](https://img.shields.io/github/license/dzoanhuy/gigagrid)](./LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-blue)](#build)
+
 A cross-platform (macOS + Windows) desktop CSV editor built for GB-scale files —
 5–20GB / tens of millions of rows. Opens instantly via a byte-offset row index
 (no full-file load), scrolls/searches by seeking, and keeps edits in memory
@@ -15,6 +20,11 @@ React/TypeScript frontend).
 - Undo/redo (including whole-paste undo in one step)
 - Multi-cell select, copy, and paste (TSV, compatible with spreadsheet apps)
 - Save writes back the raw CSV, untouched except for your edits
+
+## Download
+
+Prebuilt macOS and Windows installers are published on the
+[Releases page](https://github.com/dzoanhuy/gigagrid/releases/latest).
 
 ## Development
 
