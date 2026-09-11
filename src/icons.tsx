@@ -117,3 +117,12 @@ export function IconClock() {
     </svg>
   );
 }
+
+export function IconColumns() {
+  return (
+    <svg {...common}>
+      <rect x="3" y="4" width="18" height="16" rx="1.5" />
+      <path d="M9 4v16M15 4v16" />
+    </svg>
+  );
+}

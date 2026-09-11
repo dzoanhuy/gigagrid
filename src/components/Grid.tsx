@@ -70,6 +70,7 @@ interface GridProps {
   rowCount: number;
   showGridChrome: boolean;
   freezeHeader: boolean;
+  freezeCols: number;
   onStatsChange?: (stats: GridStats) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onError?: (message: string | null) => void;
@@ -100,7 +101,7 @@ interface CellPos {
   col: number;
 }
 
-export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, onStatsChange, onDirtyChange, onError, onRowCountChange, viewActive, onSortChange }, ref) {
+export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, freezeCols, onStatsChange, onDirtyChange, onError, onRowCountChange, viewActive, onSortChange }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -657,6 +658,13 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
     : {};
   const frozenRow = freezeHeader ? rowsByIndex.get(0) : undefined;
 
+  function frozenLeft(ci: number): number {
+    const leftCover = showGridChrome ? GUTTER_WIDTH : 0;
+    let left = leftCover;
+    for (let c = 0; c < ci; c++) left += colWidths[c] ?? DEFAULT_COL_WIDTH;
+    return left;
+  }
+
   return (
     <div
       ref={containerRef}
@@ -716,6 +724,13 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                 justifyContent: "center",
                 cursor: "pointer",
                 ...chromeBorder,
+                ...(c < freezeCols ? {
+                  position: "sticky" as const,
+                  left: frozenLeft(c),
+                  zIndex: 1,
+                  background: "var(--bg)",
+                  ...(c === freezeCols - 1 ? { borderRight: "2px solid var(--border)" } : {}),
+                } : {}),
               }}
             >
               {c + 1}
@@ -758,7 +773,13 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
             </div>
           )}
           {frozenRow.map((cell, ci) => (
-            <div key={ci} style={{ position: "relative", flexShrink: 0, width: colWidths[ci] ?? DEFAULT_COL_WIDTH, ...chromeBorder }}>
+            <div key={ci} style={{ position: "relative", flexShrink: 0, width: colWidths[ci] ?? DEFAULT_COL_WIDTH, ...chromeBorder, ...(ci < freezeCols ? {
+              position: "sticky" as const,
+              left: frozenLeft(ci),
+              zIndex: 1,
+              background: "var(--bg)",
+              ...(ci === freezeCols - 1 ? { borderRight: "2px solid var(--border)" } : {}),
+            } : {}) }}>
               <Cell
                 value={cell}
                 editing={editingCell?.row === 0 && editingCell?.col === ci}
@@ -853,6 +874,13 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                         width: colWidths[ci] ?? DEFAULT_COL_WIDTH,
                         background: isSelected(rowIndex, ci) ? "rgba(70,130,255,0.25)" : undefined,
                         ...chromeBorder,
+                        ...(ci < freezeCols ? {
+                          position: "sticky" as const,
+                          left: frozenLeft(ci),
+                          zIndex: 1,
+                          background: "var(--bg)",
+                          ...(ci === freezeCols - 1 ? { borderRight: "2px solid var(--border)" } : {}),
+                        } : {}),
                       }}
                     >
                       <Cell

@@ -5,6 +5,7 @@ export interface Settings {
   showGridChrome: boolean;
   freezeHeader: boolean;
   recentFiles: string[];
+  freezeCols: number;
 }
 
 const STORAGE_KEY = "gigagrid.settings";
@@ -14,6 +15,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showGridChrome: true,
   freezeHeader: true,
   recentFiles: [],
+  freezeCols: 0,
 };
 
 export const MAX_RECENT_FILES = 10;
