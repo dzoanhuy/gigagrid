@@ -776,6 +776,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
           const offset = range.start + i;
           const rowIndex = freezeHeader ? offset + 1 : offset;
           const row = rowsByIndex.get(rowIndex);
+          const malformed = row !== undefined && colCount > 0 && row.length !== colCount;
           return (
             <div
               key={rowIndex}
@@ -804,6 +805,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                     e.preventDefault();
                     setContextMenu({ x: e.clientX, y: e.clientY, kind: "row", index: rowIndex });
                   }}
+                  title={malformed ? `Expected ${colCount} columns, got ${row!.length}` : undefined}
                   style={{
                     position: "sticky",
                     left: 0,
@@ -815,6 +817,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                     alignItems: "center",
                     justifyContent: "center",
                     cursor: "pointer",
+                    color: malformed ? "#e08800" : undefined,
                     ...chromeBorder,
                   }}
                 >
