@@ -15,9 +15,10 @@ export interface StatusFile {
 interface StatusBarProps {
   file: StatusFile;
   stats: GridStats;
+  error?: string | null;
 }
 
-export function StatusBar({ file, stats }: StatusBarProps) {
+export function StatusBar({ file, stats, error }: StatusBarProps) {
   return (
     <div
       style={{
@@ -38,6 +39,14 @@ export function StatusBar({ file, stats }: StatusBarProps) {
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }} title={file.path}>
         {file.path}
       </span>
+      {error && (
+        <span
+          style={{ color: "red", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}
+          title={error}
+        >
+          {error}
+        </span>
+      )}
       <div style={{ display: "flex", gap: 16, flexShrink: 0 }}>
         <span>{file.row_count.toLocaleString()} rows</span>
         <span>{stats.totalCols} cols</span>

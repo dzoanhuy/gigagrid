@@ -254,10 +254,6 @@ function App() {
             Saved {activeTab.savedAt.toLocaleTimeString()}
           </span>
         )}
-        {activeTab?.error && (
-          <span style={{ color: "red", fontSize: 12, flexShrink: 0 }}>{activeTab.error}</span>
-        )}
-        {openError && <span style={{ color: "red", fontSize: 12, flexShrink: 0 }}>{openError}</span>}
         {tabs.map((tab) => (
           <div
             key={tab.meta.tab_id}
@@ -341,16 +337,36 @@ function App() {
                 rowCount={tab.meta.row_count}
                 showGridChrome={settings.showGridChrome}
                 freezeHeader={settings.freezeHeader}
-                onStatsChange={(stats) => updateTab(tab.meta.tab_id, { stats })}
+                onStatsChange={(stats) => {
+                  updateTab(tab.meta.tab_id, { stats, error: null });
+                  setOpenError(null);
+                }}
                 onDirtyChange={(dirty) => updateTab(tab.meta.tab_id, { dirty })}
                 onError={(message) => updateTab(tab.meta.tab_id, { error: message })}
                 onRowCountChange={(row_count) => updateTab(tab.meta.tab_id, { meta: { ...tab.meta, row_count } })}
               />
             </div>
-            <StatusBar file={tab.meta} stats={tab.stats} />
+            <StatusBar
+              file={tab.meta}
+              stats={tab.stats}
+              error={isActive ? (tab.error ?? openError) : tab.error}
+            />
           </div>
         );
       })}
+      {tabs.length === 0 && openError && (
+        <div
+          style={{
+            padding: "2px 8px",
+            borderTop: "1px solid var(--border)",
+            fontSize: 12,
+            color: "red",
+            flexShrink: 0,
+          }}
+        >
+          {openError}
+        </div>
+      )}
     </main>
   );
 }
