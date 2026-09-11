@@ -30,6 +30,8 @@ interface Tab {
   stats: GridStats;
   showSearch: boolean;
   dirty: boolean;
+  filterActive: boolean;
+  sortActive: boolean;
 }
 
 const EMPTY_STATS: GridStats = { totalCols: 0, cursor: null, selection: null };
@@ -152,7 +154,7 @@ function App() {
       setOpenError(null);
       setTabs((prev) => [
         ...prev,
-        { meta, error: null, saving: false, savedAt: null, stats: EMPTY_STATS, showSearch: false, dirty: false },
+        { meta, error: null, saving: false, savedAt: null, stats: EMPTY_STATS, showSearch: false, dirty: false, filterActive: false, sortActive: false },
       ]);
       setActiveTabId(meta.tab_id);
     } catch (e) {
@@ -274,6 +276,11 @@ function App() {
               onNavigate={(row, col) => handleNavigateFor(tab.meta.tab_id, row, col)}
               onToggleSearch={() => toggleSearch(tab.meta.tab_id)}
               onReplaced={() => handleReplacedFor(tab.meta.tab_id)}
+              viewActive={tab.filterActive || tab.sortActive}
+              onFilterChange={(active, rowCount) => {
+                updateTab(tab.meta.tab_id, { filterActive: active, meta: { ...tab.meta, row_count: rowCount } });
+                gridRefs.current.get(tab.meta.tab_id)?.invalidateCache();
+              }}
             />
           </div>
         ))}
@@ -344,6 +351,8 @@ function App() {
                 onDirtyChange={(dirty) => updateTab(tab.meta.tab_id, { dirty })}
                 onError={(message) => updateTab(tab.meta.tab_id, { error: message })}
                 onRowCountChange={(row_count) => updateTab(tab.meta.tab_id, { meta: { ...tab.meta, row_count } })}
+                viewActive={tab.filterActive || tab.sortActive}
+                onSortChange={(active, rowCount) => updateTab(tab.meta.tab_id, { sortActive: active, meta: { ...tab.meta, row_count: rowCount } })}
               />
             </div>
             <StatusBar

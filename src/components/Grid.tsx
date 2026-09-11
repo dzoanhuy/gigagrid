@@ -77,6 +77,8 @@ interface GridProps {
   // count out from under `rowCount`, which App.tsx owns — this pushes the
   // fresh count back up so it doesn't go stale.
   onRowCountChange?: (rowCount: number) => void;
+  viewActive: boolean;
+  onSortChange: (active: boolean, rowCount: number) => void;
 }
 
 interface ContextMenuState {
@@ -98,7 +100,7 @@ interface CellPos {
   col: number;
 }
 
-export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, onStatsChange, onDirtyChange, onError, onRowCountChange }, ref) {
+export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, onStatsChange, onDirtyChange, onError, onRowCountChange, viewActive, onSortChange }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -390,6 +392,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
   // box replaces the multi-cell highlight with the single cell being typed
   // into, and becomes the new anchor for navigation once editing ends.
   function requestEdit(row: number, col: number) {
+    if (viewActive) { onError?.("Clear filter/sort to edit cells"); return; }
     setEditingCell({ row, col });
     setSelStart({ row, col });
     setSelEnd({ row, col });
@@ -444,6 +447,20 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
     onRowCountChange?.(newCount);
     clampSelectionToRowCount(newCount);
     onDirtyChange?.(true);
+  }
+
+  async function sortByCol(col: number) {
+    setContextMenu(null);
+    const newCount = await invoke<number>("set_sort", { col, tabId });
+    invalidateCache();
+    onSortChange(true, newCount);
+  }
+
+  async function clearSort() {
+    setContextMenu(null);
+    const newCount = await invoke<number>("clear_sort", { tabId });
+    invalidateCache();
+    onSortChange(false, newCount);
   }
 
   async function insertCol(at: number) {
@@ -504,6 +521,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
   }
 
   async function pasteSelection() {
+    if (viewActive) { onError?.("Clear filter/sort to edit cells"); return; }
     const b = selectionBounds();
     if (!b) return;
     try {
@@ -868,15 +886,17 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
         >
           {contextMenu.kind === "row" ? (
             <>
-              <button onClick={() => insertRow(contextMenu.index)}>Insert row above</button>
-              <button onClick={() => insertRow(contextMenu.index + 1)}>Insert row below</button>
-              <button onClick={() => deleteRow(contextMenu.index)}>Delete row</button>
+              <button disabled={viewActive} onClick={() => insertRow(contextMenu.index)}>Insert row above</button>
+              <button disabled={viewActive} onClick={() => insertRow(contextMenu.index + 1)}>Insert row below</button>
+              <button disabled={viewActive} onClick={() => deleteRow(contextMenu.index)}>Delete row</button>
             </>
           ) : (
             <>
               <button onClick={() => insertCol(contextMenu.index)}>Insert column left</button>
               <button onClick={() => insertCol(contextMenu.index + 1)}>Insert column right</button>
               <button onClick={() => deleteCol(contextMenu.index)}>Delete column</button>
+              <button onClick={() => sortByCol(contextMenu.index)}>Sort by this column</button>
+              <button onClick={clearSort}>Clear sort</button>
             </>
           )}
         </div>

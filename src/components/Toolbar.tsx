@@ -10,6 +10,8 @@ interface ToolbarProps {
   onNavigate: (row: number, col?: number) => void;
   onToggleSearch: () => void;
   onReplaced: () => void;
+  viewActive: boolean;
+  onFilterChange: (active: boolean, rowCount: number) => void;
 }
 
 export interface ToolbarHandle {
@@ -25,13 +27,14 @@ export interface ToolbarHandle {
  * small popup opened from its own icon (closes itself after a successful
  * jump or Escape), matching the "Go to Line" pattern of most editors. */
 export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
-  { tabId, visible, onNavigate, onToggleSearch, onReplaced },
+  { tabId, visible, onNavigate, onToggleSearch, onReplaced, viewActive, onFilterChange },
   ref,
 ) {
   const [query, setQuery] = useState("");
   const [showGoto, setShowGoto] = useState(false);
   const [showReplace, setShowReplace] = useState(false);
   const [replacement, setReplacement] = useState("");
+  const [filterQuery, setFilterQuery] = useState("");
   // col:0, not -1 — `fromCol` deserializes into a Rust `usize` on the
   // backend, which rejects a negative number outright (the whole `invoke`
   // call fails silently since nothing here used to .catch() it — count
@@ -75,6 +78,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     knownTotal?: number,
   ) {
     if (!q) return;
+    if (viewActive) return;
     invoke<[number, number] | null>("search", {
       tabId,
       query: q,
@@ -115,6 +119,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
   // find-and-replace "Replace" behavior of stepping forward each time.
   async function replaceCurrent() {
     if (!query) return;
+    if (viewActive) return;
     try {
       const changed = await invoke<boolean>("replace_cell", {
         row: cursor.row,
@@ -135,6 +140,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
 
   function replaceAll() {
     if (!query) return;
+    if (viewActive) return;
     invoke<number>("replace_all", { query, replacement, tabId })
       .then((count) => {
         if (count === 0) return;
@@ -158,6 +164,16 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     }, SEARCH_DEBOUNCE_MS);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
+
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      invoke<number>("set_filter", { tabId, query: filterQuery }).then((rowCount) => {
+        onFilterChange(filterQuery.length > 0, rowCount);
+      });
+    }, SEARCH_DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filterQuery]);
 
   function submitGoto(e: React.FormEvent) {
     e.preventDefault();
@@ -188,6 +204,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
                 onToggleSearch();
               }
             }}
+            disabled={viewActive}
             style={{ width: 140 }}
           />
           {query && (
@@ -223,16 +240,17 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
                 }}
                 style={{ width: 140 }}
               />
-              <button onClick={replaceCurrent} disabled={!query}>
+              <button onClick={replaceCurrent} disabled={!query || viewActive}>
                 Replace
               </button>
-              <button onClick={replaceAll} disabled={!query}>
+              <button onClick={replaceAll} disabled={!query || viewActive}>
                 Replace All
               </button>
             </>
           )}
         </div>
       )}
+      <input placeholder="Filter…" value={filterQuery} onChange={(e) => setFilterQuery(e.currentTarget.value)} style={{ width: 100 }} />
       <button className="icon-btn" data-active={visible} title="Search (Cmd/Ctrl+F)" onClick={onToggleSearch}>
         <IconSearch />
       </button>

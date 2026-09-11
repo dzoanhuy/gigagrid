@@ -42,6 +42,7 @@ pub fn run() {
             commands::redo,
             commands::set_sort,
             commands::set_filter,
+            commands::clear_sort,
             commands::clear_view,
             commands::insert_row,
             commands::delete_row,

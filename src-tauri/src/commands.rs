@@ -128,6 +128,10 @@ fn get_rows_impl(
     Ok(rows)
 }
 
+fn view_len(open_file: &OpenFile) -> usize {
+    open_file.view.as_ref().map(|v| v.len()).unwrap_or_else(|| open_file.overlay.row_count())
+}
+
 fn rebuild_view(open_file: &mut OpenFile) -> Result<(), String> {
     if open_file.sort_col.is_none() && open_file.filter.is_none() {
         open_file.view = None;
@@ -146,19 +150,30 @@ fn rebuild_view(open_file: &mut OpenFile) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn set_sort(col: usize, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
+pub fn set_sort(col: usize, tab_id: TabId, state: State<AppState>) -> Result<usize, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     open_file.sort_col = Some(col);
-    rebuild_view(open_file)
+    rebuild_view(open_file)?;
+    Ok(view_len(open_file))
 }
 
 #[tauri::command]
-pub fn set_filter(query: String, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
+pub fn set_filter(query: String, tab_id: TabId, state: State<AppState>) -> Result<usize, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
     open_file.filter = if query.is_empty() { None } else { Some(query) };
-    rebuild_view(open_file)
+    rebuild_view(open_file)?;
+    Ok(view_len(open_file))
+}
+
+#[tauri::command]
+pub fn clear_sort(tab_id: TabId, state: State<AppState>) -> Result<usize, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    open_file.sort_col = None;
+    rebuild_view(open_file)?;
+    Ok(view_len(open_file))
 }
 
 #[tauri::command]
