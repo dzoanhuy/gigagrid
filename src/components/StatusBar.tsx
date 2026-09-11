@@ -1,3 +1,5 @@
+import { useState } from "react";
+
 export interface GridStats {
   totalCols: number;
   cursor: { row: number; col: number } | null;
@@ -16,9 +18,11 @@ interface StatusBarProps {
   file: StatusFile;
   stats: GridStats;
   error?: string | null;
+  onReopenWithDelimiter?: (delimiter: string) => void;
 }
 
-export function StatusBar({ file, stats, error }: StatusBarProps) {
+export function StatusBar({ file, stats, error, onReopenWithDelimiter }: StatusBarProps) {
+  const [showDelim, setShowDelim] = useState(false);
   return (
     <div
       style={{
@@ -50,7 +54,18 @@ export function StatusBar({ file, stats, error }: StatusBarProps) {
       <div style={{ display: "flex", gap: 16, flexShrink: 0 }}>
         <span>{file.row_count.toLocaleString()} rows</span>
         <span>{stats.totalCols} cols</span>
-        <span>{file.format}</span>
+        <span style={{ position: "relative" }}>
+          <span style={{ cursor: onReopenWithDelimiter ? "pointer" : undefined }} onClick={() => setShowDelim((v) => !v)}>
+            {file.format}
+          </span>
+          {showDelim && (
+            <div style={{ position: "absolute", bottom: "100%", left: 0, zIndex: 10, display: "flex", flexDirection: "column", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4, padding: 4 }}>
+              {[["Comma", ","], ["Tab", "\t"], ["Semicolon", ";"], ["Pipe", "|"]].map(([label, d]) => (
+                <button key={label} onClick={() => { setShowDelim(false); onReopenWithDelimiter?.(d); }}>{label}</button>
+              ))}
+            </div>
+          )}
+        </span>
         <span>{file.encoding}</span>
         <span>{file.line_ending}</span>
         {stats.cursor && (

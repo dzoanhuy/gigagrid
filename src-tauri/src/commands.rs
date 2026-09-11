@@ -47,14 +47,18 @@ pub struct FileMeta {
 }
 
 #[tauri::command]
-pub fn open_file(path: String, state: State<AppState>) -> Result<FileMeta, String> {
+pub fn open_file(path: String, delimiter: Option<String>, state: State<AppState>) -> Result<FileMeta, String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
     if guard.files.len() >= MAX_TABS {
         return Err(format!("cannot open more than {MAX_TABS} tabs — close one first"));
     }
     drop(guard);
     let p = PathBuf::from(&path);
-    let index = CsvIndex::build(&p).map_err(|e| e.to_string())?;
+    let override_byte = delimiter.as_ref().and_then(|s| s.bytes().next());
+    let index = match override_byte {
+        Some(d) => CsvIndex::build_with_delimiter(&p, d),
+        None => CsvIndex::build(&p),
+    }.map_err(|e| e.to_string())?;
     let row_count = index.row_count();
     let format = index.format_label().to_string();
     let encoding = index.encoding_label().to_string();

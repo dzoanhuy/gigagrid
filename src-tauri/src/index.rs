@@ -51,6 +51,14 @@ impl CsvIndex {
     /// so this correctly tracks quote state across chunk boundaries without
     /// needing to peek at the next byte.
     pub fn build(path: &Path) -> io::Result<CsvIndex> {
+        Self::build_inner(path, None)
+    }
+
+    pub fn build_with_delimiter(path: &Path, delimiter: u8) -> io::Result<CsvIndex> {
+        Self::build_inner(path, Some(delimiter))
+    }
+
+    fn build_inner(path: &Path, forced_delimiter: Option<u8>) -> io::Result<CsvIndex> {
         let file = File::open(path)?;
         let file_len = file.metadata()?.len();
         let mut reader = BufReader::new(file);
@@ -103,10 +111,15 @@ impl CsvIndex {
             if row_end > bom_len {
                 let line = &probe[bom_len as usize..row_end as usize];
                 crlf = line.len() >= 2 && line[line.len() - 2] == b'\r' && line[line.len() - 1] == b'\n';
-                let comma_count = line.iter().filter(|&&b| b == b',').count();
-                let tab_count = line.iter().filter(|&&b| b == b'\t').count();
-                if tab_count > comma_count {
-                    delimiter = b'\t';
+                if let Some(d) = forced_delimiter {
+                    delimiter = d;
+                } else {
+                    let comma_count = line.iter().filter(|&&b| b == b',').count();
+                    let tab_count = line.iter().filter(|&&b| b == b'\t').count();
+                    let semicolon_count = line.iter().filter(|&&b| b == b';').count();
+                    let pipe_count = line.iter().filter(|&&b| b == b'|').count();
+                    let counts = [(b',', comma_count), (b'\t', tab_count), (b';', semicolon_count), (b'|', pipe_count)];
+                    delimiter = counts.iter().copied().max_by_key(|&(_, c)| c).map(|(d, _)| d).unwrap_or(b',');
                 }
             }
         }

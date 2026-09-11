@@ -149,9 +149,9 @@ function App() {
     setTabs((prev) => prev.map((t) => (t.meta.tab_id === tabId ? { ...t, ...patch } : t)));
   }
 
-  async function openFileAsNewTab(path: string) {
+  async function openFileAsNewTab(path: string, delimiter?: string) {
     try {
-      const meta = await invoke<FileMeta>("open_file", { path });
+      const meta = await invoke<FileMeta>("open_file", { path, delimiter: delimiter ?? null });
       setOpenError(null);
       updateSettings({ recentFiles: pushRecentFile(settings.recentFiles, path) });
       setTabs((prev) => [
@@ -162,6 +162,21 @@ function App() {
     } catch (e) {
       setOpenError(String(e));
     }
+  }
+
+  async function reopenWithDelimiter(tabId: number, delimiter: string) {
+    const tab = tabs.find((t) => t.meta.tab_id === tabId);
+    if (!tab) return;
+    if (tab.dirty) {
+      const ok = window.confirm(`"${tab.meta.path}" has unsaved changes. Reopen with a different delimiter and discard them?`);
+      if (!ok) return;
+    }
+    const path = tab.meta.path;
+    await invoke("close_tab", { tabId });
+    gridRefs.current.delete(tabId);
+    toolbarRefs.current.delete(tabId);
+    setTabs((prev) => prev.filter((t) => t.meta.tab_id !== tabId));
+    await openFileAsNewTab(path, delimiter);
   }
 
   async function openFile() {
@@ -392,6 +407,7 @@ function App() {
               file={tab.meta}
               stats={tab.stats}
               error={isActive ? (tab.error ?? openError) : tab.error}
+              onReopenWithDelimiter={(d) => reopenWithDelimiter(tab.meta.tab_id, d)}
             />
           </div>
         );
