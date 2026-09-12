@@ -2,6 +2,9 @@
   "name": "gigagrid",
   "private": true,
   "version": "0.1.4",
+  "description": "Cross-platform desktop CSV/TSV editor for GB-scale files",
+  "author": "Doãn Huy",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "vite",
