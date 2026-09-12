@@ -24,9 +24,9 @@ export function IconFolder() {
 export function IconSave() {
   return (
     <svg {...common}>
-      <path d="M12 3v11" />
-      <path d="M7 10l5 5 5-5" />
-      <path d="M5 21h14" />
+      <path d="M5 3h11l3 3v15H5V3Z" />
+      <path d="M8 3v6h8V3" />
+      <path d="M8 21v-7h8v7" />
     </svg>
   );
 }

@@ -346,9 +346,6 @@ function App() {
               <IconSave />
             </button>
           )}
-          <button className="icon-btn" title={`Theme: ${settings.theme} (click to change)`} onClick={cycleTheme}>
-            <ThemeIcon />
-          </button>
           <button
             className="icon-btn"
             data-active={settings.showGridChrome}
@@ -364,6 +361,9 @@ function App() {
             onClick={() => updateSettings({ freezeHeader: !settings.freezeHeader })}
           >
             <IconPin />
+          </button>
+          <button className="icon-btn" title={`Theme: ${settings.theme} (click to change)`} onClick={cycleTheme}>
+            <ThemeIcon />
           </button>
           <button
             className="icon-btn"
