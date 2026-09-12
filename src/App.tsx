@@ -9,7 +9,7 @@ import { Grid, type GridHandle } from "./components/Grid";
 import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
 import { StatusBar, type GridStats } from "./components/StatusBar";
 import { loadSettings, saveSettings, pushRecentFile, type Settings, type Theme } from "./settings";
-import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin, IconDownload, IconClock, IconColumns } from "./icons";
+import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin, IconDownload, IconClock } from "./icons";
 
 const MAX_TABS = 10;
 
@@ -143,10 +143,6 @@ function App() {
     const order: Theme[] = ["system", "light", "dark"];
     const next = order[(order.indexOf(settings.theme) + 1) % order.length];
     updateSettings({ theme: next });
-  }
-
-  function cycleFreezeCols() {
-    updateSettings({ freezeCols: (settings.freezeCols + 1) % 4 });
   }
 
   function updateTab(tabId: number, patch: Partial<Tab>) {
@@ -369,9 +365,6 @@ function App() {
           >
             <IconPin />
           </button>
-          <button className="icon-btn" title={`Freeze ${settings.freezeCols} columns (click to change)`} onClick={cycleFreezeCols}>
-            <IconColumns />
-          </button>
           <button
             className="icon-btn"
             title={updateBusy ? "Updating…" : "Check for updates"}
@@ -400,6 +393,7 @@ function App() {
                 showGridChrome={settings.showGridChrome}
                 freezeHeader={settings.freezeHeader}
                 freezeCols={settings.freezeCols}
+                onFreezeColsChange={(freezeCols) => updateSettings({ freezeCols })}
                 onStatsChange={(stats) => {
                   updateTab(tab.meta.tab_id, { stats, error: null });
                   setOpenError(null);

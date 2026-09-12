@@ -71,6 +71,7 @@ interface GridProps {
   showGridChrome: boolean;
   freezeHeader: boolean;
   freezeCols: number;
+  onFreezeColsChange: (freezeCols: number) => void;
   onStatsChange?: (stats: GridStats) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onError?: (message: string | null) => void;
@@ -101,7 +102,7 @@ interface CellPos {
   col: number;
 }
 
-export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, freezeCols, onStatsChange, onDirtyChange, onError, onRowCountChange, viewActive, onSortChange }, ref) {
+export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, rowCount, showGridChrome, freezeHeader, freezeCols, onFreezeColsChange, onStatsChange, onDirtyChange, onError, onRowCountChange, viewActive, onSortChange }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const fetchTimer = useRef<number | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
@@ -806,7 +807,7 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
                 top: offset * rowHeight,
                 height: rowHeight,
                 display: "flex",
-                width: "100%",
+                width: "fit-content",
                 zIndex: editingCell?.row === rowIndex ? 5 : undefined,
               }}
             >
@@ -928,6 +929,31 @@ export const Grid = forwardRef<GridHandle, GridProps>(function Grid({ tabId, row
               <button onClick={() => deleteCol(contextMenu.index)}>Delete column</button>
               <button onClick={() => sortByCol(contextMenu.index)}>Sort by this column</button>
               <button onClick={clearSort}>Clear sort</button>
+              {contextMenu.index < freezeCols ? (
+                <button
+                  onClick={() => {
+                    setContextMenu(null);
+                    onFreezeColsChange(0);
+                  }}
+                >
+                  Unfreeze columns
+                </button>
+              ) : (
+                <button
+                  disabled={frozenLeft(contextMenu.index) >= (containerRef.current?.clientWidth ?? 0) * 0.7}
+                  title={
+                    frozenLeft(contextMenu.index) >= (containerRef.current?.clientWidth ?? 0) * 0.7
+                      ? "Too far from the left edge to freeze"
+                      : undefined
+                  }
+                  onClick={() => {
+                    setContextMenu(null);
+                    onFreezeColsChange(contextMenu.index + 1);
+                  }}
+                >
+                  Freeze columns up to here
+                </button>
+              )}
             </>
           )}
         </div>

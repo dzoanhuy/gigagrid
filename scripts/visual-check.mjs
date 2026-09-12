@@ -1095,28 +1095,72 @@ async function main() {
     await page.screenshot({ path: path.join(OUT_DIR, "recent-files.png") });
     await page.keyboard.press("Escape");
 
-    // --- Check 21: freeze N columns cycles 0->1->2->3->0, sticky applied/removed ---
-    const freezeBtn = await page.$('button[title*="Freeze"][title*="columns"]');
-    console.log("Freeze-columns button present:", !!freezeBtn);
-    await freezeBtn.click(); // 0 -> 1
-    await page.waitForTimeout(200);
-    const stickyAfterFreeze1 = await page.evaluate(() => {
+    // --- Check 21: freeze columns via column context menu ("Freeze columns
+    // up to here" / "Unfreeze columns") — replaces the old toolbar-cycle
+    // UX. Also confirms the CSS fix: frozen columns stay sticky even when
+    // scrolled all the way right (the bug was the data-row wrapper using
+    // width:"100%" instead of "fit-content", so sticky's containing block
+    // was only viewport-wide — same pattern header/frozen-row already used).
+    const colHeaderForFreeze = await page.$('[data-gigagrid-scroll] > div:first-child > div:nth-child(2)');
+    await colHeaderForFreeze.click({ button: "right" });
+    await page.waitForTimeout(150);
+    const freezeMenuItems = await page.evaluate(() => Array.from(document.querySelectorAll("button")).map((b) => b.textContent));
+    console.log("Column context menu has freeze option:", freezeMenuItems.filter((t) => /freeze/i.test(t || "")));
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Freeze columns up to here");
+      btn.click();
+    });
+    await page.waitForTimeout(300);
+    const stickyAfterFreeze = await page.evaluate(() => {
       const firstRow = document.querySelector('[data-gigagrid-scroll] > div:last-child > div');
       const firstDataCell = firstRow ? Array.from(firstRow.children)[1] : null;
       return firstDataCell ? getComputedStyle(firstDataCell).position : null;
     });
-    console.log("First data column position after freezing 1 col (expect 'sticky'):", stickyAfterFreeze1);
+    console.log("First data column position after 'Freeze columns up to here' on col 0 (expect 'sticky'):", stickyAfterFreeze);
+
+    // scroll all the way right — frozen column must STAY put (this is the
+    // reported bug: it used to drift away once scrolled past the viewport's
+    // own width).
+    await page.evaluate(() => {
+      const el = document.querySelector("[data-gigagrid-scroll]");
+      el.scrollLeft = el.scrollWidth;
+    });
+    await page.waitForTimeout(200);
+    const frozenColLeftAfterScrollRight = await page.evaluate(() => {
+      const firstRow = document.querySelector('[data-gigagrid-scroll] > div:last-child > div');
+      const firstDataCell = firstRow ? Array.from(firstRow.children)[1] : null;
+      return firstDataCell ? firstDataCell.getBoundingClientRect().left : null;
+    });
+    console.log(
+      "Frozen column's screen-left position after scrolling all the way right (expect ~48, the gutter width — NOT scrolled off to the left):",
+      frozenColLeftAfterScrollRight,
+    );
     await page.screenshot({ path: path.join(OUT_DIR, "freeze-cols.png") });
-    await freezeBtn.click(); // 1 -> 2
-    await freezeBtn.click(); // 2 -> 3
-    await freezeBtn.click(); // 3 -> 0
+    await page.evaluate(() => { document.querySelector("[data-gigagrid-scroll]").scrollLeft = 0; });
     await page.waitForTimeout(200);
-    const positionAfterCycleBackTo0 = await page.evaluate(() => {
+
+    // right-click the now-frozen column again — menu should offer "Unfreeze
+    // columns" instead of "Freeze columns up to here".
+    const colHeaderForUnfreeze = await page.$('[data-gigagrid-scroll] > div:first-child > div:nth-child(2)');
+    await colHeaderForUnfreeze.click({ button: "right" });
+    await page.waitForTimeout(150);
+    const unfreezeMenuItems = await page.evaluate(() => Array.from(document.querySelectorAll("button")).map((b) => b.textContent));
+    console.log("Column context menu on a FROZEN column offers Unfreeze (expect true, no longer 'Freeze columns up to here'):", unfreezeMenuItems.includes("Unfreeze columns") && !unfreezeMenuItems.includes("Freeze columns up to here"));
+    await page.evaluate(() => {
+      const btn = Array.from(document.querySelectorAll("button")).find((b) => b.textContent === "Unfreeze columns");
+      btn.click();
+    });
+    await page.waitForTimeout(300);
+    const positionAfterUnfreeze = await page.evaluate(() => {
       const firstRow = document.querySelector('[data-gigagrid-scroll] > div:last-child > div');
       const firstDataCell = firstRow ? Array.from(firstRow.children)[1] : null;
       return firstDataCell ? getComputedStyle(firstDataCell).position : null;
     });
-    console.log("First data column position after cycling back to 0 (expect 'relative'):", positionAfterCycleBackTo0);
+    console.log("First data column position after 'Unfreeze columns' (expect 'relative'):", positionAfterUnfreeze);
+    // NOTE: the 70%-of-viewport-width disable rule for far-right columns
+    // isn't exercised here — this mock only has 5 narrow columns, none of
+    // which reach the 70% threshold in an 1100px viewport. Worth a manual
+    // check with a wide/many-column real file.
 
     // --- Check 22: custom-delimiter reopen menu (format label in StatusBar) ---
     const formatLabel = await page.evaluateHandle(() => {
