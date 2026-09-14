@@ -2,7 +2,7 @@ import "./App.css";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { open } from "@tauri-apps/plugin-dialog";
+import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { check as checkForUpdate, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Grid, type GridHandle } from "./components/Grid";
@@ -113,12 +113,23 @@ function App() {
       return;
     }
     if (!update) {
-      if (!silent) window.alert("Gigagrid is already up to date.");
+      if (!silent) {
+        await message("Gigagrid is already up to date.", {
+          title: "Gigagrid",
+          kind: "info",
+        });
+      }
       return;
     }
     const notes = update.body ? `\n\n${update.body}` : "";
-    const ok = window.confirm(
+    const ok = await ask(
       `A new update is available: v${update.version}${notes}\n\nDownload and install now? The app will restart.`,
+      {
+        title: "Update Available",
+        kind: "info",
+        okLabel: "Update",
+        cancelLabel: "Later",
+      },
     );
     if (!ok) return;
     setUpdateBusy(true);
@@ -168,7 +179,15 @@ function App() {
     const tab = tabs.find((t) => t.meta.tab_id === tabId);
     if (!tab) return;
     if (tab.dirty) {
-      const ok = window.confirm(`"${tab.meta.path}" has unsaved changes. Reopen with a different delimiter and discard them?`);
+      const ok = await ask(
+        `"${tab.meta.path}" has unsaved changes. Reopen with a different delimiter and discard them?`,
+        {
+          title: "Unsaved Changes",
+          kind: "warning",
+          okLabel: "Discard",
+          cancelLabel: "Cancel",
+        },
+      );
       if (!ok) return;
     }
     const path = tab.meta.path;
@@ -191,7 +210,15 @@ function App() {
   async function closeTab(tabId: number) {
     const tab = tabs.find((t) => t.meta.tab_id === tabId);
     if (tab?.dirty) {
-      const ok = window.confirm(`"${tab.meta.path}" has unsaved changes. Close tab and discard them?`);
+      const ok = await ask(
+        `"${tab.meta.path}" has unsaved changes. Close tab and discard them?`,
+        {
+          title: "Unsaved Changes",
+          kind: "warning",
+          okLabel: "Discard",
+          cancelLabel: "Cancel",
+        },
+      );
       if (!ok) return;
     }
     await invoke("close_tab", { tabId });
