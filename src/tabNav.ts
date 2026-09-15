@@ -24,3 +24,12 @@ export function formatMatchCount(ordinal: number, total: number | null): string 
   if (total === 0) return "0 / 0";
   return `${ordinal} / ${total}`;
 }
+
+export function findExistingTab<T extends { meta: { path: string } }>(
+  tabs: T[],
+  targetPath: string,
+): T | undefined {
+  const normTarget = targetPath.replace(/\\/g, "/");
+  return tabs.find((t) => t.meta.path.replace(/\\/g, "/") === normTarget);
+}
+

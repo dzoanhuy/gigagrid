@@ -11,7 +11,7 @@ import { SearchPanel, type SearchPanelHandle } from "./components/SearchPanel";
 import { StatusBar, type GridStats } from "./components/StatusBar";
 import { loadSettings, saveSettings, pushRecentFile, type Settings, type Theme } from "./settings";
 import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin, IconDownload, IconClock } from "./icons";
-import { getAdjacentTabIndex, getTabIndexFromKey } from "./tabNav";
+import { findExistingTab, getAdjacentTabIndex, getTabIndexFromKey } from "./tabNav";
 
 const MAX_TABS = 10;
 
@@ -47,6 +47,8 @@ function App() {
   const [showSearch, setShowSearch] = useState(false);
   const gridRefs = useRef<Map<number, GridHandle>>(new Map());
   const searchPanelRef = useRef<SearchPanelHandle>(null);
+  const tabsRef = useRef<Tab[]>(tabs);
+  tabsRef.current = tabs;
 
   const activeTab = tabs.find((t) => t.meta.tab_id === activeTabId) ?? null;
 
@@ -221,14 +223,29 @@ function App() {
   }
 
   async function openFileAsNewTab(path: string, delimiter?: string) {
+    if (!delimiter) {
+      const existing = findExistingTab(tabsRef.current, path);
+      if (existing) {
+        setActiveTabId(existing.meta.tab_id);
+        return;
+      }
+    }
     try {
       const meta = await invoke<FileMeta>("open_file", { path, delimiter: delimiter ?? null });
       setOpenError(null);
       updateSettings({ recentFiles: pushRecentFile(settings.recentFiles, path) });
-      setTabs((prev) => [
-        ...prev,
-        { meta, error: null, saving: false, savedAt: null, stats: EMPTY_STATS, dirty: false, filterActive: false, sortActive: false },
-      ]);
+      const newTab: Tab = {
+        meta,
+        error: null,
+        saving: false,
+        savedAt: null,
+        stats: EMPTY_STATS,
+        dirty: false,
+        filterActive: false,
+        sortActive: false,
+      };
+      tabsRef.current = [...tabsRef.current, newTab];
+      setTabs((prev) => [...prev, newTab]);
       setActiveTabId(meta.tab_id);
     } catch (e) {
       setOpenError(String(e));
@@ -253,6 +270,7 @@ function App() {
     const path = tab.meta.path;
     await invoke("close_tab", { tabId });
     gridRefs.current.delete(tabId);
+    tabsRef.current = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
     setTabs((prev) => prev.filter((t) => t.meta.tab_id !== tabId));
     await openFileAsNewTab(path, delimiter);
   }
@@ -282,6 +300,7 @@ function App() {
     }
     await invoke("close_tab", { tabId });
     gridRefs.current.delete(tabId);
+    tabsRef.current = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
     const remaining = tabs.filter((t) => t.meta.tab_id !== tabId);
     setTabs(remaining);
     if (activeTabId === tabId) {

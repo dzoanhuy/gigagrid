@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatMatchCount, getAdjacentTabIndex, getTabIndexFromKey } from "./tabNav";
+import { findExistingTab, formatMatchCount, getAdjacentTabIndex, getTabIndexFromKey } from "./tabNav";
 
 describe("getAdjacentTabIndex", () => {
   it("wraps around to the last tab when moving left from tab 0", () => {
@@ -75,3 +75,26 @@ describe("formatMatchCount", () => {
     expect(formatMatchCount(5, 10)).toBe("5 / 10");
   });
 });
+
+describe("findExistingTab", () => {
+  const tabs = [
+    { meta: { path: "/Users/dev/data/file1.csv", tab_id: 1 } },
+    { meta: { path: "C:\\Users\\dev\\data\\file2.csv", tab_id: 2 } },
+  ];
+
+  it("finds tab with identical path", () => {
+    const hit = findExistingTab(tabs, "/Users/dev/data/file1.csv");
+    expect(hit?.meta.tab_id).toBe(1);
+  });
+
+  it("finds tab with slash vs backslash difference", () => {
+    const hit = findExistingTab(tabs, "C:/Users/dev/data/file2.csv");
+    expect(hit?.meta.tab_id).toBe(2);
+  });
+
+  it("returns undefined when file is not open in any tab", () => {
+    const hit = findExistingTab(tabs, "/Users/dev/data/other.csv");
+    expect(hit).toBeUndefined();
+  });
+});
+
