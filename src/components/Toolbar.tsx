@@ -1,6 +1,6 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { IconSearch, IconHash, IconReplace } from "../icons";
+import { IconSearch, IconHash } from "../icons";
 
 const SEARCH_DEBOUNCE_MS = 200;
 
@@ -9,161 +9,22 @@ interface ToolbarProps {
   visible: boolean;
   onNavigate: (row: number, col?: number) => void;
   onToggleSearch: () => void;
-  onReplaced: () => void;
   viewActive: boolean;
   onFilterChange: (active: boolean, rowCount: number) => void;
 }
 
-export interface ToolbarHandle {
-  focusSearch: () => void;
-  findNext: () => void;
-  findPrev: () => void;
-}
-
-/** Search cell-by-cell across the whole file (Cmd/Ctrl+F to show+focus this
- * box, Cmd/Ctrl+G / Enter to jump to the next match, Shift+ variants for
- * the previous one) — the matched cell is selected in the grid, and a
- * running "N / total" count is shown next to the box. Goto row/col is a
- * small popup opened from its own icon (closes itself after a successful
- * jump or Escape), matching the "Go to Line" pattern of most editors. */
-export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
-  { tabId, visible, onNavigate, onToggleSearch, onReplaced, viewActive, onFilterChange },
-  ref,
-) {
-  const [query, setQuery] = useState("");
+export function Toolbar({
+  tabId,
+  visible,
+  onNavigate,
+  onToggleSearch,
+  viewActive: _viewActive,
+  onFilterChange,
+}: ToolbarProps) {
   const [showGoto, setShowGoto] = useState(false);
-  const [showReplace, setShowReplace] = useState(false);
-  const [replacement, setReplacement] = useState("");
   const [filterQuery, setFilterQuery] = useState("");
-  // col:0, not -1 — `fromCol` deserializes into a Rust `usize` on the
-  // backend, which rejects a negative number outright (the whole `invoke`
-  // call fails silently since nothing here used to .catch() it — count
-  // still updated via the separate, unrelated `count_matches` call, so the
-  // box looked like "found 1 but never jumped to it"). find_next/find_prev
-  // both have a same-row fallback pass that still catches a match sitting
-  // exactly at column 0, so starting from col 0 loses nothing.
-  const [cursor, setCursor] = useState<{ row: number; col: number }>({ row: 0, col: 0 });
-  const [totalMatches, setTotalMatches] = useState<number | null>(null);
-  const [matchOrdinal, setMatchOrdinal] = useState(0);
   const [gotoRow, setGotoRow] = useState("");
   const [gotoCol, setGotoCol] = useState("");
-  const debounceRef = useRef<number | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const totalMatchesRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    totalMatchesRef.current = totalMatches;
-  }, [totalMatches]);
-
-  useImperativeHandle(ref, () => ({
-    focusSearch: () => inputRef.current?.focus(),
-    findNext: () => runSearch(query, cursor, "next"),
-    findPrev: () => runSearch(query, cursor, "prev"),
-  }));
-
-  // `isInitial` = this is the FIRST lookup for a freshly-typed query (from
-  // row/col 0) — sets the ordinal directly (1 if found, 0 if not) instead of
-  // incrementing, so the initial fetch never double-counts as a "next" step.
-  function runSearch(
-    q: string,
-    from: { row: number; col: number },
-    direction: "next" | "prev",
-    isInitial = false,
-    // Only replaceCurrent needs this: it already knows the FRESH total (it
-    // just awaited count_matches) before calling runSearch to advance —
-    // reading `totalMatchesRef.current` instead would race the ref's own
-    // update (which only lands after React re-renders from the sibling
-    // `setTotalMatches` call), showing a stale ordinal against the just-
-    // shrunk match count.
-    knownTotal?: number,
-  ) {
-    if (!q) return;
-    if (viewActive) return;
-    invoke<[number, number] | null>("search", {
-      tabId,
-      query: q,
-      fromRow: from.row,
-      fromCol: from.col,
-      direction,
-    })
-      .then((hit) => {
-        if (!hit) {
-          if (isInitial) setMatchOrdinal(0);
-          return;
-        }
-        const [row, col] = hit;
-        setCursor({ row, col });
-        if (isInitial) {
-          setMatchOrdinal(1);
-        } else {
-          setMatchOrdinal((prev) => {
-            const total = knownTotal ?? totalMatchesRef.current;
-            if (!total) return prev;
-            const next = direction === "next" ? prev + 1 : prev - 1;
-            return ((next - 1 + total) % total) + 1;
-          });
-        }
-        onNavigate(row, col);
-      })
-      .catch((err) => {
-        // An invoke rejection here used to fail SILENTLY (count still
-        // updated via the separate count_matches call, cursor/selection
-        // just never moved) — surface it instead of swallowing it.
-        console.error("search failed:", err);
-      });
-  }
-
-  // Replaces the cell the search cursor currently sits on, then advances to
-  // the NEXT match — the just-replaced cell no longer contains `query`, so
-  // it can never come up again on its own, matching the usual
-  // find-and-replace "Replace" behavior of stepping forward each time.
-  async function replaceCurrent() {
-    if (!query) return;
-    if (viewActive) return;
-    try {
-      const changed = await invoke<boolean>("replace_cell", {
-        row: cursor.row,
-        col: cursor.col,
-        query,
-        replacement,
-        tabId,
-      });
-      if (!changed) return;
-      onReplaced();
-      const freshTotal = await invoke<number>("count_matches", { tabId, query });
-      setTotalMatches(freshTotal);
-      runSearch(query, cursor, "next", false, freshTotal);
-    } catch (err) {
-      console.error("replace failed:", err);
-    }
-  }
-
-  function replaceAll() {
-    if (!query) return;
-    if (viewActive) return;
-    invoke<number>("replace_all", { query, replacement, tabId })
-      .then((count) => {
-        if (count === 0) return;
-        onReplaced();
-        setTotalMatches(0);
-        setMatchOrdinal(0);
-      })
-      .catch((err) => console.error("replace all failed:", err));
-  }
-
-  useEffect(() => {
-    if (!query) {
-      setTotalMatches(null);
-      setMatchOrdinal(0);
-      return;
-    }
-    if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
-    debounceRef.current = window.setTimeout(() => {
-      invoke<number>("count_matches", { tabId, query }).then(setTotalMatches);
-      runSearch(query, { row: 0, col: 0 }, "next", true);
-    }, SEARCH_DEBOUNCE_MS);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [query]);
 
   useEffect(() => {
     const t = window.setTimeout(() => {
@@ -173,7 +34,7 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterQuery]);
+  }, [filterQuery, tabId]);
 
   function submitGoto(e: React.FormEvent) {
     e.preventDefault();
@@ -188,74 +49,27 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
 
   return (
     <>
-      {visible && (
-        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-          <input
-            ref={inputRef}
-            placeholder="Search…"
-            value={query}
-            onChange={(e) => setQuery(e.currentTarget.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                if (debounceRef.current !== null) window.clearTimeout(debounceRef.current);
-                runSearch(query, cursor, e.shiftKey ? "prev" : "next");
-              } else if (e.key === "Escape") {
-                onToggleSearch();
-              }
-            }}
-            disabled={viewActive}
-            style={{ width: 140 }}
-          />
-          {query && (
-            <span style={{ fontSize: 12, opacity: 0.7, minWidth: 48 }}>
-              {totalMatches === null
-                ? "…"
-                : totalMatches === 0
-                  ? "0 / 0"
-                  : `${matchOrdinal} / ${totalMatches}`}
-            </span>
-          )}
-          <button
-            className="icon-btn"
-            data-active={showReplace}
-            title="Toggle replace"
-            onClick={() => setShowReplace((v) => !v)}
-          >
-            <IconReplace />
-          </button>
-          {showReplace && (
-            <>
-              <input
-                placeholder="Replace…"
-                value={replacement}
-                onChange={(e) => setReplacement(e.currentTarget.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    replaceCurrent();
-                  } else if (e.key === "Escape") {
-                    setShowReplace(false);
-                  }
-                }}
-                style={{ width: 140 }}
-              />
-              <button onClick={replaceCurrent} disabled={!query || viewActive}>
-                Replace
-              </button>
-              <button onClick={replaceAll} disabled={!query || viewActive}>
-                Replace All
-              </button>
-            </>
-          )}
-        </div>
-      )}
-      <input placeholder="Filter…" value={filterQuery} onChange={(e) => setFilterQuery(e.currentTarget.value)} style={{ width: 100 }} />
-      <button className="icon-btn" data-active={visible} title="Search (Cmd/Ctrl+F)" onClick={onToggleSearch}>
+      <input
+        placeholder="Filter…"
+        value={filterQuery}
+        onChange={(e) => setFilterQuery(e.currentTarget.value)}
+        style={{ width: 100 }}
+      />
+      <button
+        className="icon-btn"
+        data-active={visible}
+        title="Search (Cmd/Ctrl+F)"
+        onClick={onToggleSearch}
+      >
         <IconSearch />
       </button>
       <div style={{ position: "relative" }}>
-        <button className="icon-btn" data-active={showGoto} title="Go to row/col" onClick={() => setShowGoto((v) => !v)}>
+        <button
+          className="icon-btn"
+          data-active={showGoto}
+          title="Go to row/col"
+          onClick={() => setShowGoto((v) => !v)}
+        >
           <IconHash />
         </button>
         {showGoto && (
@@ -298,4 +112,4 @@ export const Toolbar = forwardRef<ToolbarHandle, ToolbarProps>(function Toolbar(
       </div>
     </>
   );
-});
+}

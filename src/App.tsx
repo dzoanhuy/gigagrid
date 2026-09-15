@@ -6,10 +6,12 @@ import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { check as checkForUpdate, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { Grid, type GridHandle } from "./components/Grid";
-import { Toolbar, type ToolbarHandle } from "./components/Toolbar";
+import { Toolbar } from "./components/Toolbar";
+import { SearchPanel, type SearchPanelHandle } from "./components/SearchPanel";
 import { StatusBar, type GridStats } from "./components/StatusBar";
 import { loadSettings, saveSettings, pushRecentFile, type Settings, type Theme } from "./settings";
 import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin, IconDownload, IconClock } from "./icons";
+import { getAdjacentTabIndex, getTabIndexFromKey } from "./tabNav";
 
 const MAX_TABS = 10;
 
@@ -28,7 +30,6 @@ interface Tab {
   saving: boolean;
   savedAt: Date | null;
   stats: GridStats;
-  showSearch: boolean;
   dirty: boolean;
   filterActive: boolean;
   sortActive: boolean;
@@ -43,8 +44,9 @@ function App() {
   const [settings, setSettings] = useState<Settings>(() => loadSettings());
   const [updateBusy, setUpdateBusy] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
+  const [showSearch, setShowSearch] = useState(false);
   const gridRefs = useRef<Map<number, GridHandle>>(new Map());
-  const toolbarRefs = useRef<Map<number, ToolbarHandle>>(new Map());
+  const searchPanelRef = useRef<SearchPanelHandle>(null);
 
   const activeTab = tabs.find((t) => t.meta.tab_id === activeTabId) ?? null;
 
@@ -65,36 +67,94 @@ function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  function toggleSearch(tabId: number) {
-    setTabs((prev) =>
-      prev.map((t) => {
-        if (t.meta.tab_id !== tabId) return t;
-        const next = !t.showSearch;
-        if (next) window.setTimeout(() => toolbarRefs.current.get(tabId)?.focusSearch(), 0);
-        return { ...t, showSearch: next };
-      }),
-    );
+  function toggleSearch() {
+    setShowSearch((prev) => {
+      const next = !prev;
+      if (next) window.setTimeout(() => searchPanelRef.current?.focusAndSelect(), 0);
+      return next;
+    });
   }
 
   useEffect(() => {
+    function isEditingText(): boolean {
+      const el = document.activeElement;
+      if (!el) return false;
+      const tag = el.tagName.toLowerCase();
+      return tag === "input" || tag === "textarea" || (el as HTMLElement).isContentEditable;
+    }
+
     function onKeyDown(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod || activeTabId === null) return;
-      if (e.key === "f") {
+      if (activeTabId === null) return;
+
+      // 1. Tab shortcuts: Cmd+1..9
+      if (mod && !e.altKey && !e.shiftKey) {
+        const targetIndex = getTabIndexFromKey(e.key, tabs.length);
+        if (targetIndex !== null) {
+          e.preventDefault();
+          setActiveTabId(tabs[targetIndex].meta.tab_id);
+          return;
+        }
+      }
+
+      // 2. Tab switching: Cmd+Option+Left/Right (always) OR Cmd+Shift+Left/Right (only when not editing text)
+      const isArrowTab =
+        (mod && e.altKey && (e.key === "ArrowLeft" || e.key === "ArrowRight")) ||
+        (mod && e.shiftKey && (e.key === "ArrowLeft" || e.key === "ArrowRight") && !isEditingText());
+
+      if (isArrowTab) {
         e.preventDefault();
-        toggleSearch(activeTabId);
-      } else if (e.key === "g") {
+        if (tabs.length > 1) {
+          const currentIndex = tabs.findIndex((t) => t.meta.tab_id === activeTabId);
+          if (currentIndex !== -1) {
+            const nextIndex = getAdjacentTabIndex(
+              currentIndex,
+              tabs.length,
+              e.key === "ArrowLeft" ? "left" : "right",
+            );
+            setActiveTabId(tabs[nextIndex].meta.tab_id);
+            return;
+          }
+        }
+      }
+
+      // 3. Search shortcuts:
+      // Cmd+F: Toggle search panel; when opening -> select all
+      if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "f") {
         e.preventDefault();
-        const tab = tabs.find((t) => t.meta.tab_id === activeTabId);
-        if (!tab?.showSearch) return;
-        const handle = toolbarRefs.current.get(activeTabId);
-        if (e.shiftKey) handle?.findPrev();
-        else handle?.findNext();
+        toggleSearch();
+        return;
+      }
+
+      // Cmd+G and Cmd+Shift+G:
+      // If search not open -> open it and jump next/prev
+      // If search open -> jump next/prev
+      if (mod && !e.altKey && e.key.toLowerCase() === "g") {
+        e.preventDefault();
+        if (!showSearch) {
+          setShowSearch(true);
+        }
+        window.setTimeout(() => {
+          if (e.shiftKey) {
+            searchPanelRef.current?.findPrev();
+          } else {
+            searchPanelRef.current?.findNext();
+          }
+        }, 0);
+        return;
+      }
+
+      // Escape: close search panel if open
+      if (e.key === "Escape" && showSearch) {
+        e.preventDefault();
+        setShowSearch(false);
+        return;
       }
     }
+
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [activeTabId, tabs]);
+  }, [activeTabId, tabs, showSearch]);
 
   function updateSettings(patch: Partial<Settings>) {
     setSettings((prev) => {
@@ -167,7 +227,7 @@ function App() {
       updateSettings({ recentFiles: pushRecentFile(settings.recentFiles, path) });
       setTabs((prev) => [
         ...prev,
-        { meta, error: null, saving: false, savedAt: null, stats: EMPTY_STATS, showSearch: false, dirty: false, filterActive: false, sortActive: false },
+        { meta, error: null, saving: false, savedAt: null, stats: EMPTY_STATS, dirty: false, filterActive: false, sortActive: false },
       ]);
       setActiveTabId(meta.tab_id);
     } catch (e) {
@@ -193,7 +253,6 @@ function App() {
     const path = tab.meta.path;
     await invoke("close_tab", { tabId });
     gridRefs.current.delete(tabId);
-    toolbarRefs.current.delete(tabId);
     setTabs((prev) => prev.filter((t) => t.meta.tab_id !== tabId));
     await openFileAsNewTab(path, delimiter);
   }
@@ -223,7 +282,6 @@ function App() {
     }
     await invoke("close_tab", { tabId });
     gridRefs.current.delete(tabId);
-    toolbarRefs.current.delete(tabId);
     const remaining = tabs.filter((t) => t.meta.tab_id !== tabId);
     setTabs(remaining);
     if (activeTabId === tabId) {
@@ -261,73 +319,59 @@ function App() {
   return (
     <main style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", borderBottom: "1px solid var(--border)" }}>
-        <div style={{ display: "flex", gap: 4, overflowX: "auto", flex: 1, minWidth: 0 }}>
-          {tabs.map((tab) => (
-            <div
-              key={tab.meta.tab_id}
-              onClick={() => setActiveTabId(tab.meta.tab_id)}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 4,
-                padding: "4px 8px",
-                cursor: "pointer",
-                borderBottom: tab.meta.tab_id === activeTabId ? "2px solid var(--fg)" : "2px solid transparent",
-                opacity: tab.meta.tab_id === activeTabId ? 1 : 0.6,
-                maxWidth: 200,
-                flexShrink: 0,
-              }}
-              title={tab.meta.path}
-            >
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                {tab.meta.path.split(/[\\/]/).pop()}
-                {tab.dirty ? " •" : ""}
-              </span>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  closeTab(tab.meta.tab_id);
-                }}
-                style={{ lineHeight: 1 }}
+        <div className="tab-bar-container">
+          {tabs.map((tab) => {
+            const isActive = tab.meta.tab_id === activeTabId;
+            const fileName = tab.meta.path.split(/[\\/]/).pop();
+            return (
+              <div
+                key={tab.meta.tab_id}
+                data-active={isActive}
+                className="tab-item"
+                onClick={() => setActiveTabId(tab.meta.tab_id)}
+                title={tab.meta.path}
               >
-                ×
-              </button>
-            </div>
-          ))}
+                <span className="tab-title">
+                  {fileName}
+                  {tab.dirty ? " •" : ""}
+                </span>
+                <button
+                  className="tab-close-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    closeTab(tab.meta.tab_id);
+                  }}
+                  title="Close tab"
+                >
+                  ×
+                </button>
+              </div>
+            );
+          })}
         </div>
         {activeTab?.savedAt && (
           <span style={{ opacity: 0.6, fontSize: 12, flexShrink: 0 }}>
             Saved {activeTab.savedAt.toLocaleTimeString()}
           </span>
         )}
-        {tabs.map((tab) => (
-          <div
-            key={tab.meta.tab_id}
-            style={{
-              display: tab.meta.tab_id === activeTabId ? "flex" : "none",
-              gap: 4,
-              alignItems: "center",
-              flexShrink: 0,
-            }}
-          >
+        {activeTab && (
+          <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
             <Toolbar
-              ref={(handle) => {
-                if (handle) toolbarRefs.current.set(tab.meta.tab_id, handle);
-                else toolbarRefs.current.delete(tab.meta.tab_id);
-              }}
-              tabId={tab.meta.tab_id}
-              visible={tab.showSearch}
-              onNavigate={(row, col) => handleNavigateFor(tab.meta.tab_id, row, col)}
-              onToggleSearch={() => toggleSearch(tab.meta.tab_id)}
-              onReplaced={() => handleReplacedFor(tab.meta.tab_id)}
-              viewActive={tab.filterActive || tab.sortActive}
+              tabId={activeTab.meta.tab_id}
+              visible={showSearch}
+              onNavigate={(row, col) => handleNavigateFor(activeTab.meta.tab_id, row, col)}
+              onToggleSearch={toggleSearch}
+              viewActive={activeTab.filterActive || activeTab.sortActive}
               onFilterChange={(active, rowCount) => {
-                updateTab(tab.meta.tab_id, { filterActive: active, meta: { ...tab.meta, row_count: rowCount } });
-                gridRefs.current.get(tab.meta.tab_id)?.invalidateCache();
+                updateTab(activeTab.meta.tab_id, {
+                  filterActive: active,
+                  meta: { ...activeTab.meta, row_count: rowCount },
+                });
+                gridRefs.current.get(activeTab.meta.tab_id)?.invalidateCache();
               }}
             />
           </div>
-        ))}
+        )}
         <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
           <div style={{ position: "relative" }}>
             <button className="icon-btn" title="Open file" onClick={openFile} disabled={tabs.length >= MAX_TABS}>
@@ -402,45 +446,58 @@ function App() {
           </button>
         </div>
       </div>
-      {tabs.map((tab) => {
-        const isActive = tab.meta.tab_id === activeTabId;
-        return (
-          <div
-            key={tab.meta.tab_id}
-            style={{ display: isActive ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}
-          >
-            <div style={{ flex: 1, minHeight: 0 }}>
-              <Grid
-                ref={(handle) => {
-                  if (handle) gridRefs.current.set(tab.meta.tab_id, handle);
-                  else gridRefs.current.delete(tab.meta.tab_id);
-                }}
-                tabId={tab.meta.tab_id}
-                rowCount={tab.meta.row_count}
-                showGridChrome={settings.showGridChrome}
-                freezeHeader={settings.freezeHeader}
-                freezeCols={settings.freezeCols}
-                onFreezeColsChange={(freezeCols) => updateSettings({ freezeCols })}
-                onStatsChange={(stats) => {
-                  updateTab(tab.meta.tab_id, { stats, error: null });
-                  setOpenError(null);
-                }}
-                onDirtyChange={(dirty) => updateTab(tab.meta.tab_id, { dirty })}
-                onError={(message) => updateTab(tab.meta.tab_id, { error: message })}
-                onRowCountChange={(row_count) => updateTab(tab.meta.tab_id, { meta: { ...tab.meta, row_count } })}
-                viewActive={tab.filterActive || tab.sortActive}
-                onSortChange={(active, rowCount) => updateTab(tab.meta.tab_id, { sortActive: active, meta: { ...tab.meta, row_count: rowCount } })}
+      <div style={{ position: "relative", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+        {tabs.map((tab) => {
+          const isActive = tab.meta.tab_id === activeTabId;
+          return (
+            <div
+              key={tab.meta.tab_id}
+              style={{ display: isActive ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}
+            >
+              <div style={{ flex: 1, minHeight: 0 }}>
+                <Grid
+                  ref={(handle) => {
+                    if (handle) gridRefs.current.set(tab.meta.tab_id, handle);
+                    else gridRefs.current.delete(tab.meta.tab_id);
+                  }}
+                  tabId={tab.meta.tab_id}
+                  rowCount={tab.meta.row_count}
+                  showGridChrome={settings.showGridChrome}
+                  freezeHeader={settings.freezeHeader}
+                  freezeCols={settings.freezeCols}
+                  onFreezeColsChange={(freezeCols) => updateSettings({ freezeCols })}
+                  onStatsChange={(stats) => {
+                    updateTab(tab.meta.tab_id, { stats, error: null });
+                    setOpenError(null);
+                  }}
+                  onDirtyChange={(dirty) => updateTab(tab.meta.tab_id, { dirty })}
+                  onError={(message) => updateTab(tab.meta.tab_id, { error: message })}
+                  onRowCountChange={(row_count) => updateTab(tab.meta.tab_id, { meta: { ...tab.meta, row_count } })}
+                  viewActive={tab.filterActive || tab.sortActive}
+                  onSortChange={(active, rowCount) => updateTab(tab.meta.tab_id, { sortActive: active, meta: { ...tab.meta, row_count: rowCount } })}
+                />
+              </div>
+              <StatusBar
+                file={tab.meta}
+                stats={tab.stats}
+                error={isActive ? (tab.error ?? openError) : tab.error}
+                onReopenWithDelimiter={(d) => reopenWithDelimiter(tab.meta.tab_id, d)}
               />
             </div>
-            <StatusBar
-              file={tab.meta}
-              stats={tab.stats}
-              error={isActive ? (tab.error ?? openError) : tab.error}
-              onReopenWithDelimiter={(d) => reopenWithDelimiter(tab.meta.tab_id, d)}
-            />
-          </div>
-        );
-      })}
+          );
+        })}
+        {activeTab && (
+          <SearchPanel
+            ref={searchPanelRef}
+            tabId={activeTab.meta.tab_id}
+            visible={showSearch}
+            onClose={() => setShowSearch(false)}
+            onNavigate={(row, col) => handleNavigateFor(activeTab.meta.tab_id, row, col)}
+            onReplaced={() => handleReplacedFor(activeTab.meta.tab_id)}
+            viewActive={activeTab.filterActive || activeTab.sortActive}
+          />
+        )}
+      </div>
       {tabs.length === 0 && openError && (
         <div
           style={{
