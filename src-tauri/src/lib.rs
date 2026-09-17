@@ -4,19 +4,134 @@ mod overlay;
 mod save;
 mod search;
 
-use tauri::{Emitter, RunEvent};
-// Only used by the macOS/iOS/Android `RunEvent::Opened` arm below (for
-// `.state::<PendingOpen>()`) — cfg-gated the same way so Windows/Linux
-// builds don't carry an unused-import warning for a trait they never call.
-#[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
-use tauri::Manager;
+use tauri::{Emitter, Manager, RunEvent};
+
+#[cfg(desktop)]
+fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Result<tauri::menu::Menu<R>> {
+    let pkg_info = app.package_info();
+    let config = app.config();
+    let about_metadata = tauri::menu::AboutMetadata {
+        name: Some(pkg_info.name.clone()),
+        version: Some(pkg_info.version.to_string()),
+        copyright: config.bundle.copyright.clone(),
+        authors: config.bundle.publisher.clone().map(|p| vec![p]),
+        ..Default::default()
+    };
+
+    let save_file_item = tauri::menu::MenuItemBuilder::with_id("save-file", "Save")
+        .accelerator("CmdOrCtrl+S")
+        .build(app)?;
+
+    let close_tab_item = tauri::menu::MenuItemBuilder::with_id("close-tab", "Close Tab")
+        .accelerator("CmdOrCtrl+W")
+        .build(app)?;
+
+    let close_window_item = tauri::menu::MenuItemBuilder::with_id("close-window", "Close Window")
+        .accelerator("CmdOrCtrl+Shift+W")
+        .build(app)?;
+
+    let window_menu = tauri::menu::Submenu::with_id_and_items(
+        app,
+        tauri::menu::WINDOW_SUBMENU_ID,
+        "Window",
+        true,
+        &[
+            &tauri::menu::PredefinedMenuItem::minimize(app, None)?,
+            &tauri::menu::PredefinedMenuItem::maximize(app, None)?,
+            #[cfg(target_os = "macos")]
+            &tauri::menu::PredefinedMenuItem::separator(app)?,
+        ],
+    )?;
+
+    let help_menu = tauri::menu::Submenu::with_id_and_items(
+        app,
+        tauri::menu::HELP_SUBMENU_ID,
+        "Help",
+        true,
+        &[
+            #[cfg(not(target_os = "macos"))]
+            &tauri::menu::PredefinedMenuItem::about(app, None, Some(about_metadata.clone()))?,
+        ],
+    )?;
+
+    let file_menu = tauri::menu::Submenu::with_items(
+        app,
+        "File",
+        true,
+        &[
+            &save_file_item,
+            &tauri::menu::PredefinedMenuItem::separator(app)?,
+            &close_tab_item,
+            &close_window_item,
+            #[cfg(not(target_os = "macos"))]
+            &tauri::menu::PredefinedMenuItem::quit(app, None)?,
+        ],
+    )?;
+
+    let edit_menu = tauri::menu::Submenu::with_items(
+        app,
+        "Edit",
+        true,
+        &[
+            &tauri::menu::PredefinedMenuItem::undo(app, None)?,
+            &tauri::menu::PredefinedMenuItem::redo(app, None)?,
+            &tauri::menu::PredefinedMenuItem::separator(app)?,
+            &tauri::menu::PredefinedMenuItem::cut(app, None)?,
+            &tauri::menu::PredefinedMenuItem::copy(app, None)?,
+            &tauri::menu::PredefinedMenuItem::paste(app, None)?,
+            &tauri::menu::PredefinedMenuItem::select_all(app, None)?,
+        ],
+    )?;
+
+    let menu = tauri::menu::Menu::with_items(
+        app,
+        &[
+            #[cfg(target_os = "macos")]
+            &tauri::menu::Submenu::with_items(
+                app,
+                pkg_info.name.clone(),
+                true,
+                &[
+                    &tauri::menu::PredefinedMenuItem::about(app, None, Some(about_metadata))?,
+                    &tauri::menu::PredefinedMenuItem::separator(app)?,
+                    &tauri::menu::PredefinedMenuItem::services(app, None)?,
+                    &tauri::menu::PredefinedMenuItem::separator(app)?,
+                    &tauri::menu::PredefinedMenuItem::hide(app, None)?,
+                    &tauri::menu::PredefinedMenuItem::hide_others(app, None)?,
+                    &tauri::menu::PredefinedMenuItem::separator(app)?,
+                    &tauri::menu::PredefinedMenuItem::quit(app, None)?,
+                ],
+            )?,
+            #[cfg(not(any(
+                target_os = "linux",
+                target_os = "dragonfly",
+                target_os = "freebsd",
+                target_os = "netbsd",
+                target_os = "openbsd"
+            )))]
+            &file_menu,
+            &edit_menu,
+            #[cfg(target_os = "macos")]
+            &tauri::menu::Submenu::with_items(
+                app,
+                "View",
+                true,
+                &[&tauri::menu::PredefinedMenuItem::fullscreen(app, None)?],
+            )?,
+            &window_menu,
+            &help_menu,
+        ],
+    )?;
+
+    Ok(menu)
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let initial_arg = std::env::args().nth(1).filter(|a| commands::is_csv_or_tsv(a));
     let pending_open = commands::PendingOpen(std::sync::Mutex::new(initial_arg));
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             if let Some(path) = args.into_iter().skip(1).find(|a| commands::is_csv_or_tsv(a)) {
                 let _ = app.emit("open-file", path);
@@ -27,7 +142,24 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .manage(std::sync::Mutex::new(commands::TabRegistry::new()))
-        .manage(pending_open)
+        .manage(pending_open);
+
+    #[cfg(desktop)]
+    let builder = builder
+        .menu(|app| create_app_menu(app))
+        .on_menu_event(|app, event| {
+            if event.id() == "save-file" {
+                let _ = app.emit("save-active-file", ());
+            } else if event.id() == "close-tab" {
+                let _ = app.emit("close-active-tab", ());
+            } else if event.id() == "close-window" {
+                for window in app.webview_windows().values() {
+                    let _ = window.close();
+                }
+            }
+        });
+
+    builder
         .invoke_handler(tauri::generate_handler![
             commands::open_file,
             commands::get_rows,
@@ -50,7 +182,10 @@ pub fn run() {
             commands::delete_col,
             commands::save_file,
             commands::close_tab,
-            commands::take_pending_open
+            commands::take_pending_open,
+            commands::set_encoding,
+            commands::set_line_ending,
+            commands::set_delimiter
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

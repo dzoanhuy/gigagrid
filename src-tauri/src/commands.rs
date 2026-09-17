@@ -47,7 +47,12 @@ pub struct FileMeta {
 }
 
 #[tauri::command]
-pub fn open_file(path: String, delimiter: Option<String>, state: State<AppState>) -> Result<FileMeta, String> {
+pub fn open_file(
+    path: String,
+    delimiter: Option<String>,
+    encoding: Option<String>,
+    state: State<AppState>,
+) -> Result<FileMeta, String> {
     let guard = state.lock().map_err(|e| e.to_string())?;
     if guard.files.len() >= MAX_TABS {
         return Err(format!("cannot open more than {MAX_TABS} tabs — close one first"));
@@ -55,10 +60,9 @@ pub fn open_file(path: String, delimiter: Option<String>, state: State<AppState>
     drop(guard);
     let p = PathBuf::from(&path);
     let override_byte = delimiter.as_ref().and_then(|s| s.bytes().next());
-    let index = match override_byte {
-        Some(d) => CsvIndex::build_with_delimiter(&p, d),
-        None => CsvIndex::build(&p),
-    }.map_err(|e| e.to_string())?;
+    let forced_encoding = encoding.as_deref().and_then(crate::index::parse_encoding);
+    let index = CsvIndex::build_with_options(&p, override_byte, forced_encoding)
+        .map_err(|e| e.to_string())?;
     let row_count = index.row_count();
     let format = index.format_label().to_string();
     let encoding = index.encoding_label().to_string();
@@ -196,11 +200,91 @@ pub fn clear_view(tab_id: TabId, state: State<AppState>) -> Result<(), String> {
 /// opened path.
 #[tauri::command]
 pub fn save_file(dst: Option<String>, tab_id: TabId, state: State<AppState>) -> Result<(), String> {
-    let guard = state.lock().map_err(|e| e.to_string())?;
-    let open_file = guard.files.get(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    let is_in_place = dst.is_none() || dst.as_deref().map(PathBuf::from) == Some(open_file.path.clone());
     let dst_path = dst.map(PathBuf::from).unwrap_or_else(|| open_file.path.clone());
     crate::save::save(&open_file.index, &open_file.overlay, &open_file.path, &dst_path)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    if is_in_place {
+        let col_count = open_file.overlay.col_count();
+        let delimiter = open_file.index.delimiter();
+        let encoding = open_file.index.encoding();
+        let new_index = CsvIndex::build_with_options(&open_file.path, Some(delimiter), Some(encoding))
+            .map_err(|e| e.to_string())?;
+        open_file.index = new_index;
+        open_file.overlay = Overlay::new(open_file.index.row_count(), col_count);
+        open_file.view = None;
+        open_file.sort_col = None;
+        open_file.filter = None;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn set_encoding(
+    tab_id: TabId,
+    encoding: String,
+    state: State<AppState>,
+) -> Result<FileMeta, String> {
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    let enc = crate::index::parse_encoding(&encoding).ok_or_else(|| format!("unknown encoding: {encoding}"))?;
+    open_file.index.set_encoding(enc);
+    let row_count = open_file.index.row_count();
+    let format = open_file.index.format_label().to_string();
+    let encoding_label = open_file.index.encoding_label().to_string();
+    let line_ending = open_file.index.line_ending_label().to_string();
+    let path = open_file.path.to_string_lossy().to_string();
+    Ok(FileMeta { tab_id, path, row_count, format, encoding: encoding_label, line_ending })
+}
+
+#[tauri::command]
+pub fn set_line_ending(
+    tab_id: TabId,
+    line_ending: String,
+    state: State<AppState>,
+) -> Result<FileMeta, String> {
+    let is_crlf = match line_ending.trim().to_ascii_uppercase().as_str() {
+        "CRLF" | "\r\n" => true,
+        "LF" | "\n" => false,
+        other => return Err(format!("unsupported line ending: {other} (expected 'LF' or 'CRLF')")),
+    };
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    open_file.index.set_crlf(is_crlf);
+    let row_count = open_file.index.row_count();
+    let format = open_file.index.format_label().to_string();
+    let encoding_label = open_file.index.encoding_label().to_string();
+    let line_ending_label = open_file.index.line_ending_label().to_string();
+    let path = open_file.path.to_string_lossy().to_string();
+    Ok(FileMeta { tab_id, path, row_count, format, encoding: encoding_label, line_ending: line_ending_label })
+}
+
+#[tauri::command]
+pub fn set_delimiter(
+    tab_id: TabId,
+    delimiter: String,
+    state: State<AppState>,
+) -> Result<FileMeta, String> {
+    let delim_byte = match delimiter.trim().to_ascii_uppercase().as_str() {
+        "TSV" | "\t" | "TAB" => b'\t',
+        "CSV" | "," | "COMMA" => b',',
+        ";" | "SEMICOLON" => b';',
+        "|" | "PIPE" => b'|',
+        s if s.len() == 1 => s.as_bytes()[0],
+        other => return Err(format!("unsupported delimiter: {other}")),
+    };
+    let mut guard = state.lock().map_err(|e| e.to_string())?;
+    let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
+    open_file.index.set_save_delimiter(Some(delim_byte));
+    let row_count = open_file.index.row_count();
+    let format = open_file.index.format_label().to_string();
+    let encoding_label = open_file.index.encoding_label().to_string();
+    let line_ending_label = open_file.index.line_ending_label().to_string();
+    let path = open_file.path.to_string_lossy().to_string();
+    Ok(FileMeta { tab_id, path, row_count, format, encoding: encoding_label, line_ending: line_ending_label })
 }
 
 #[tauri::command]

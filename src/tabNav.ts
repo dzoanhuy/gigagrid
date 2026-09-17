@@ -33,3 +33,11 @@ export function findExistingTab<T extends { meta: { path: string } }>(
   return tabs.find((t) => t.meta.path.replace(/\\/g, "/") === normTarget);
 }
 
+export function getNextActiveTabIndexAfterClose(
+  closedIndex: number,
+  remainingTabsCount: number,
+): number | null {
+  if (remainingTabsCount <= 0 || closedIndex < 0) return null;
+  return Math.min(closedIndex, remainingTabsCount - 1);
+}
+

@@ -11,7 +11,12 @@ import { SearchPanel, type SearchPanelHandle } from "./components/SearchPanel";
 import { StatusBar, type GridStats } from "./components/StatusBar";
 import { loadSettings, saveSettings, pushRecentFile, type Settings, type Theme } from "./settings";
 import { IconFolder, IconSave, IconMonitor, IconSun, IconMoon, IconGrid, IconPin, IconDownload, IconClock } from "./icons";
-import { findExistingTab, getAdjacentTabIndex, getTabIndexFromKey } from "./tabNav";
+import {
+  findExistingTab,
+  getAdjacentTabIndex,
+  getNextActiveTabIndexAfterClose,
+  getTabIndexFromKey,
+} from "./tabNav";
 
 const MAX_TABS = 10;
 
@@ -49,6 +54,9 @@ function App() {
   const searchPanelRef = useRef<SearchPanelHandle>(null);
   const tabsRef = useRef<Tab[]>(tabs);
   tabsRef.current = tabs;
+  const activeTabIdRef = useRef<number | null>(activeTabId);
+  activeTabIdRef.current = activeTabId;
+  const lastCloseTimeRef = useRef(0);
 
   const activeTab = tabs.find((t) => t.meta.tab_id === activeTabId) ?? null;
 
@@ -60,11 +68,25 @@ function App() {
     invoke<string | null>("take_pending_open").then((path) => {
       if (path) openFileAsNewTab(path);
     });
-    const unlisten = listen<string>("open-file", (event) => {
+    const unlistenOpen = listen<string>("open-file", (event) => {
       openFileAsNewTab(event.payload);
     });
+    const unlistenClose = listen("close-active-tab", () => {
+      requestCloseActiveTab();
+    });
+    const unlistenSave = listen("save-active-file", () => {
+      if (document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+      }
+      const currentActive = activeTabIdRef.current;
+      if (currentActive !== null) {
+        saveFile(currentActive);
+      }
+    });
     return () => {
-      unlisten.then((f) => f());
+      unlistenOpen.then((f) => f());
+      unlistenClose.then((f) => f());
+      unlistenSave.then((f) => f());
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -89,6 +111,19 @@ function App() {
       const mod = e.metaKey || e.ctrlKey;
       if (activeTabId === null) return;
 
+      // Save active tab: Cmd+S / Ctrl+S
+      if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        if (document.activeElement instanceof HTMLElement) {
+          document.activeElement.blur();
+        }
+        const currentActive = activeTabIdRef.current;
+        if (currentActive !== null) {
+          saveFile(currentActive);
+        }
+        return;
+      }
+
       // 1. Tab shortcuts: Cmd+1..9
       if (mod && !e.altKey && !e.shiftKey) {
         const targetIndex = getTabIndexFromKey(e.key, tabs.length);
@@ -97,6 +132,13 @@ function App() {
           setActiveTabId(tabs[targetIndex].meta.tab_id);
           return;
         }
+      }
+
+      // Close active tab: Cmd+W / Ctrl+W
+      if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "w") {
+        e.preventDefault();
+        requestCloseActiveTab();
+        return;
       }
 
       // 2. Tab switching: Cmd+Option+Left/Right (always) OR Cmd+Shift+Left/Right (only when not editing text)
@@ -222,8 +264,8 @@ function App() {
     setTabs((prev) => prev.map((t) => (t.meta.tab_id === tabId ? { ...t, ...patch } : t)));
   }
 
-  async function openFileAsNewTab(path: string, delimiter?: string) {
-    if (!delimiter) {
+  async function openFileAsNewTab(path: string, delimiter?: string, encoding?: string) {
+    if (!delimiter && !encoding) {
       const existing = findExistingTab(tabsRef.current, path);
       if (existing) {
         setActiveTabId(existing.meta.tab_id);
@@ -231,7 +273,11 @@ function App() {
       }
     }
     try {
-      const meta = await invoke<FileMeta>("open_file", { path, delimiter: delimiter ?? null });
+      const meta = await invoke<FileMeta>("open_file", {
+        path,
+        delimiter: delimiter ?? null,
+        encoding: encoding ?? null,
+      });
       setOpenError(null);
       updateSettings({ recentFiles: pushRecentFile(settings.recentFiles, path) });
       const newTab: Tab = {
@@ -268,11 +314,60 @@ function App() {
       if (!ok) return;
     }
     const path = tab.meta.path;
+    const currentEncoding = tab.meta.encoding;
     await invoke("close_tab", { tabId });
     gridRefs.current.delete(tabId);
     tabsRef.current = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
     setTabs((prev) => prev.filter((t) => t.meta.tab_id !== tabId));
-    await openFileAsNewTab(path, delimiter);
+    await openFileAsNewTab(path, delimiter, currentEncoding);
+  }
+
+  async function reopenWithEncoding(tabId: number, encoding: string) {
+    const tab = tabs.find((t) => t.meta.tab_id === tabId);
+    if (!tab) return;
+    if (tab.dirty) {
+      const ok = await ask(
+        `"${tab.meta.path}" has unsaved changes. Reopen with a different encoding and discard them?`,
+        {
+          title: "Unsaved Changes",
+          kind: "warning",
+          okLabel: "Discard",
+          cancelLabel: "Cancel",
+        },
+      );
+      if (!ok) return;
+    }
+    const path = tab.meta.path;
+    const delimiter = tab.meta.format === "TSV" ? "\t" : ",";
+    await invoke("close_tab", { tabId });
+    gridRefs.current.delete(tabId);
+    tabsRef.current = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
+    setTabs((prev) => prev.filter((t) => t.meta.tab_id !== tabId));
+    await openFileAsNewTab(path, delimiter, encoding);
+  }
+
+  async function changeFormat(tabId: number, format: "CSV" | "TSV") {
+    const tab = tabs.find((t) => t.meta.tab_id === tabId);
+    if (!tab) return;
+    if (tab.meta.format === format) return;
+    try {
+      const meta = await invoke<FileMeta>("set_delimiter", { tabId, delimiter: format });
+      updateTab(tabId, { meta, dirty: true });
+    } catch (e) {
+      setOpenError(String(e));
+    }
+  }
+
+  async function changeLineEnding(tabId: number, lineEnding: "LF" | "CRLF") {
+    const tab = tabs.find((t) => t.meta.tab_id === tabId);
+    if (!tab) return;
+    if (tab.meta.line_ending === lineEnding) return;
+    try {
+      const meta = await invoke<FileMeta>("set_line_ending", { tabId, lineEnding });
+      updateTab(tabId, { meta, dirty: true });
+    } catch (e) {
+      setOpenError(String(e));
+    }
   }
 
   async function openFile() {
@@ -285,7 +380,11 @@ function App() {
   }
 
   async function closeTab(tabId: number) {
-    const tab = tabs.find((t) => t.meta.tab_id === tabId);
+    const currentTabs = tabsRef.current;
+    const tabIndex = currentTabs.findIndex((t) => t.meta.tab_id === tabId);
+    if (tabIndex === -1) return;
+
+    const tab = currentTabs[tabIndex];
     if (tab?.dirty) {
       const ok = await ask(
         `"${tab.meta.path}" has unsaved changes. Close tab and discard them?`,
@@ -300,11 +399,24 @@ function App() {
     }
     await invoke("close_tab", { tabId });
     gridRefs.current.delete(tabId);
-    tabsRef.current = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
-    const remaining = tabs.filter((t) => t.meta.tab_id !== tabId);
+    const remaining = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
+    tabsRef.current = remaining;
     setTabs(remaining);
-    if (activeTabId === tabId) {
-      setActiveTabId(remaining.length > 0 ? remaining[remaining.length - 1].meta.tab_id : null);
+    setActiveTabId((currentActiveId) => {
+      if (currentActiveId === tabId) {
+        const nextIndex = getNextActiveTabIndexAfterClose(tabIndex, remaining.length);
+        return nextIndex !== null ? remaining[nextIndex].meta.tab_id : null;
+      }
+      return currentActiveId;
+    });
+  }
+
+  function requestCloseActiveTab() {
+    const now = Date.now();
+    if (now - lastCloseTimeRef.current < 200) return;
+    lastCloseTimeRef.current = now;
+    if (activeTabIdRef.current !== null) {
+      closeTab(activeTabIdRef.current);
     }
   }
 
@@ -348,6 +460,18 @@ function App() {
                 data-active={isActive}
                 className="tab-item"
                 onClick={() => setActiveTabId(tab.meta.tab_id)}
+                onMouseDown={(e) => {
+                  if (e.button === 1) {
+                    e.preventDefault();
+                  }
+                }}
+                onAuxClick={(e) => {
+                  if (e.button === 1) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    closeTab(tab.meta.tab_id);
+                  }
+                }}
                 title={tab.meta.path}
               >
                 <span className="tab-title">
@@ -359,6 +483,18 @@ function App() {
                   onClick={(e) => {
                     e.stopPropagation();
                     closeTab(tab.meta.tab_id);
+                  }}
+                  onMouseDown={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                    }
+                  }}
+                  onAuxClick={(e) => {
+                    if (e.button === 1) {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      closeTab(tab.meta.tab_id);
+                    }
                   }}
                   title="Close tab"
                 >
@@ -501,6 +637,9 @@ function App() {
                 stats={tab.stats}
                 error={isActive ? (tab.error ?? openError) : tab.error}
                 onReopenWithDelimiter={(d) => reopenWithDelimiter(tab.meta.tab_id, d)}
+                onReopenWithEncoding={(enc) => reopenWithEncoding(tab.meta.tab_id, enc)}
+                onChangeFormat={(fmt) => changeFormat(tab.meta.tab_id, fmt)}
+                onChangeLineEnding={(le) => changeLineEnding(tab.meta.tab_id, le)}
               />
             </div>
           );

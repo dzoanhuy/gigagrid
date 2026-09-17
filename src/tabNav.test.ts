@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { findExistingTab, formatMatchCount, getAdjacentTabIndex, getTabIndexFromKey } from "./tabNav";
+import {
+  findExistingTab,
+  formatMatchCount,
+  getAdjacentTabIndex,
+  getNextActiveTabIndexAfterClose,
+  getTabIndexFromKey,
+} from "./tabNav";
 
 describe("getAdjacentTabIndex", () => {
   it("wraps around to the last tab when moving left from tab 0", () => {
@@ -95,6 +101,33 @@ describe("findExistingTab", () => {
   it("returns undefined when file is not open in any tab", () => {
     const hit = findExistingTab(tabs, "/Users/dev/data/other.csv");
     expect(hit).toBeUndefined();
+  });
+});
+
+describe("getNextActiveTabIndexAfterClose", () => {
+  it("returns null if no tabs remain after closing", () => {
+    expect(getNextActiveTabIndexAfterClose(0, 0)).toBeNull();
+    expect(getNextActiveTabIndexAfterClose(1, 0)).toBeNull();
+  });
+
+  it("returns null if closedIndex is negative", () => {
+    expect(getNextActiveTabIndexAfterClose(-1, 3)).toBeNull();
+  });
+
+  it("keeps the same index if an earlier tab is closed and remaining tabs reach that index", () => {
+    // When tab 1 is closed from [A, B, C], remaining are [A, C] (count 2).
+    // The tab at index 1 is now C.
+    expect(getNextActiveTabIndexAfterClose(1, 2)).toBe(1);
+  });
+
+  it("activates index 0 when first tab is closed", () => {
+    expect(getNextActiveTabIndexAfterClose(0, 2)).toBe(0);
+  });
+
+  it("activates the last remaining tab when the previous last tab is closed", () => {
+    // When tab 2 was closed from [A, B, C], remaining are [A, B] (count 2).
+    // The new active index should be 1 (B).
+    expect(getNextActiveTabIndexAfterClose(2, 2)).toBe(1);
   });
 });
 
