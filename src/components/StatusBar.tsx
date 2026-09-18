@@ -20,6 +20,7 @@ interface StatusBarProps {
   error?: string | null;
   onReopenWithDelimiter?: (delimiter: string) => void;
   onReopenWithEncoding?: (encoding: string) => void;
+  onChangeEncoding?: (encoding: string) => void;
   onChangeFormat?: (format: "CSV" | "TSV") => void;
   onChangeLineEnding?: (lineEnding: "LF" | "CRLF") => void;
 }
@@ -30,6 +31,7 @@ export function StatusBar({
   error,
   onReopenWithDelimiter,
   onReopenWithEncoding,
+  onChangeEncoding,
   onChangeFormat,
   onChangeLineEnding,
 }: StatusBarProps) {
@@ -71,29 +73,37 @@ export function StatusBar({
         borderTop: "1px solid var(--border)",
         fontSize: 12,
         lineHeight: "16px",
-        opacity: 0.8,
         flexShrink: 0,
-        overflow: "hidden",
         whiteSpace: "nowrap",
+        background: "var(--bg)",
+        position: "relative",
+        zIndex: 30,
       }}
     >
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }} title={file.path}>
+      <span
+        style={{ overflow: "hidden", textOverflow: "ellipsis", minWidth: 0, opacity: 0.8 }}
+        title={file.path}
+      >
         {file.path}
       </span>
       {error && (
         <span
-          style={{ color: "red", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}
+          style={{ color: "var(--danger, #d93025)", overflow: "hidden", textOverflow: "ellipsis", minWidth: 0 }}
           title={error}
         >
           {error}
         </span>
       )}
-      <div style={{ display: "flex", gap: 16, flexShrink: 0 }}>
-        <span>{file.row_count.toLocaleString()} rows</span>
-        <span>{stats.totalCols} cols</span>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexShrink: 0 }}>
+        <span style={{ opacity: 0.8 }}>{file.row_count.toLocaleString()} rows</span>
+        <span style={{ opacity: 0.8 }}>{stats.totalCols} cols</span>
+
+        {/* Format / Delimiter anchor */}
         <span style={{ position: "relative" }} className="status-popover-anchor">
-          <span
-            style={{ cursor: "pointer" }}
+          <button
+            type="button"
+            className="status-bar-btn"
+            data-active={showDelim}
             onClick={() => {
               setShowDelim((v) => !v);
               setShowEnc(false);
@@ -102,27 +112,27 @@ export function StatusBar({
             title="Click to switch format (CSV/TSV) or reopen with delimiter"
           >
             {file.format}
-          </span>
+          </button>
           {showDelim && (
             <div
               style={{
                 position: "absolute",
-                bottom: "100%",
-                left: 0,
-                zIndex: 10,
+                bottom: "calc(100% + 6px)",
+                right: 0,
+                zIndex: 100,
                 display: "flex",
                 flexDirection: "column",
                 minWidth: 170,
                 background: "var(--bg)",
                 border: "1px solid var(--border)",
-                borderRadius: 4,
-                boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                borderRadius: 6,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
                 padding: 4,
                 gap: 2,
               }}
             >
               <div style={{ fontSize: 11, opacity: 0.7, padding: "2px 6px", fontWeight: 600 }}>
-                Format
+                Format (Save As)
               </div>
               {[
                 ["CSV (Comma ,)", "CSV"],
@@ -131,21 +141,17 @@ export function StatusBar({
                 const isCurrent = file.format === fmt;
                 return (
                   <button
+                    type="button"
                     key={fmt}
+                    className="status-popover-item"
+                    data-current={isCurrent}
                     onClick={() => {
                       setShowDelim(false);
                       onChangeFormat?.(fmt as "CSV" | "TSV");
                     }}
-                    style={{
-                      textAlign: "left",
-                      fontWeight: isCurrent ? 700 : "normal",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                    }}
                   >
                     <span>{label}</span>
-                    {isCurrent && <span style={{ fontSize: 10, opacity: 0.7 }}>✓</span>}
+                    {isCurrent && <span style={{ fontSize: 11, color: "var(--primary, #396cd8)" }}>✓</span>}
                   </button>
                 );
               })}
@@ -162,7 +168,7 @@ export function StatusBar({
                   fontWeight: 600,
                 }}
               >
-                Reopen raw file as...
+                Reopen with Delimiter
               </div>
               {[
                 ["Comma (,)", ","],
@@ -171,22 +177,27 @@ export function StatusBar({
                 ["Pipe (|)", "|"],
               ].map(([label, d]) => (
                 <button
+                  type="button"
                   key={d}
+                  className="status-popover-item"
                   onClick={() => {
                     setShowDelim(false);
                     onReopenWithDelimiter?.(d);
                   }}
-                  style={{ textAlign: "left" }}
                 >
-                  {label}
+                  <span>{label}</span>
                 </button>
               ))}
             </div>
           )}
         </span>
+
+        {/* Encoding anchor */}
         <span style={{ position: "relative" }} className="status-popover-anchor">
-          <span
-            style={{ cursor: onReopenWithEncoding ? "pointer" : undefined }}
+          <button
+            type="button"
+            className="status-bar-btn"
+            data-active={showEnc}
             onClick={() => {
               setShowEnc((v) => !v);
               setShowDelim(false);
@@ -195,21 +206,21 @@ export function StatusBar({
             title="Click to switch encoding"
           >
             {file.encoding}
-          </span>
+          </button>
           {showEnc && (
             <div
               style={{
                 position: "absolute",
-                bottom: "100%",
-                left: 0,
-                zIndex: 10,
+                bottom: "calc(100% + 6px)",
+                right: 0,
+                zIndex: 100,
                 display: "flex",
                 flexDirection: "column",
-                minWidth: 150,
+                minWidth: 160,
                 background: "var(--bg)",
                 border: "1px solid var(--border)",
-                borderRadius: 4,
-                boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                borderRadius: 6,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
                 padding: 4,
                 gap: 2,
               }}
@@ -234,30 +245,34 @@ export function StatusBar({
                       enc.toLowerCase().replace(/[-_]/g, "");
                 return (
                   <button
+                    type="button"
                     key={enc}
+                    className="status-popover-item"
+                    data-current={isCurrent}
                     onClick={() => {
                       setShowEnc(false);
-                      onReopenWithEncoding?.(enc);
-                    }}
-                    style={{
-                      textAlign: "left",
-                      fontWeight: isCurrent ? 700 : "normal",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
+                      if (onChangeEncoding) {
+                        onChangeEncoding(enc);
+                      } else {
+                        onReopenWithEncoding?.(enc);
+                      }
                     }}
                   >
                     <span>{label}</span>
-                    {isCurrent && <span style={{ fontSize: 10, opacity: 0.7 }}>✓</span>}
+                    {isCurrent && <span style={{ fontSize: 11, color: "var(--primary, #396cd8)" }}>✓</span>}
                   </button>
                 );
               })}
             </div>
           )}
         </span>
+
+        {/* Line Ending anchor */}
         <span style={{ position: "relative" }} className="status-popover-anchor">
-          <span
-            style={{ cursor: onChangeLineEnding ? "pointer" : undefined }}
+          <button
+            type="button"
+            className="status-bar-btn"
+            data-active={showLineEnding}
             onClick={() => {
               setShowLineEnding((v) => !v);
               setShowDelim(false);
@@ -266,21 +281,21 @@ export function StatusBar({
             title="Click to switch line ending"
           >
             {file.line_ending}
-          </span>
+          </button>
           {showLineEnding && (
             <div
               style={{
                 position: "absolute",
-                bottom: "100%",
-                left: 0,
-                zIndex: 10,
+                bottom: "calc(100% + 6px)",
+                right: 0,
+                zIndex: 100,
                 display: "flex",
                 flexDirection: "column",
                 minWidth: 160,
                 background: "var(--bg)",
                 border: "1px solid var(--border)",
-                borderRadius: 4,
-                boxShadow: "0 2px 8px rgba(0,0,0,0.2)",
+                borderRadius: 6,
+                boxShadow: "0 4px 16px rgba(0,0,0,0.18)",
                 padding: 4,
                 gap: 2,
               }}
@@ -295,34 +310,31 @@ export function StatusBar({
                 const isCurrent = file.line_ending.toUpperCase() === le;
                 return (
                   <button
+                    type="button"
                     key={le}
+                    className="status-popover-item"
+                    data-current={isCurrent}
                     onClick={() => {
                       setShowLineEnding(false);
                       onChangeLineEnding?.(le as "LF" | "CRLF");
                     }}
-                    style={{
-                      textAlign: "left",
-                      fontWeight: isCurrent ? 700 : "normal",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      alignItems: "center",
-                    }}
                   >
                     <span>{label}</span>
-                    {isCurrent && <span style={{ fontSize: 10, opacity: 0.7 }}>✓</span>}
+                    {isCurrent && <span style={{ fontSize: 11, color: "var(--primary, #396cd8)" }}>✓</span>}
                   </button>
                 );
               })}
             </div>
           )}
         </span>
+
         {stats.cursor && (
-          <span>
+          <span style={{ opacity: 0.8 }}>
             cursor: R{stats.cursor.row + 1}, C{stats.cursor.col + 1}
           </span>
         )}
         {stats.selection && stats.selection.rows * stats.selection.cols > 1 && (
-          <span>
+          <span style={{ opacity: 0.8 }}>
             selection: {stats.selection.rows} × {stats.selection.cols}
           </span>
         )}

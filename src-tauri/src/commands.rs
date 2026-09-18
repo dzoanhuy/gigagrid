@@ -1,6 +1,7 @@
 use crate::index::CsvIndex;
 use crate::overlay::Overlay;
 use std::fs::File;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::State;
@@ -230,7 +231,16 @@ pub fn set_encoding(
 ) -> Result<FileMeta, String> {
     let mut guard = state.lock().map_err(|e| e.to_string())?;
     let open_file = guard.files.get_mut(&tab_id).ok_or_else(|| "tab not found".to_string())?;
-    let enc = crate::index::parse_encoding(&encoding).ok_or_else(|| format!("unknown encoding: {encoding}"))?;
+    let enc = if encoding.trim().eq_ignore_ascii_case("auto") {
+        let mut probe_file = File::open(&open_file.path).map_err(|e| e.to_string())?;
+        let mut probe = vec![0u8; 64 * 1024];
+        let n = probe_file.read(&mut probe).map_err(|e| e.to_string())?;
+        probe.truncate(n);
+        let (detected_enc, _) = crate::index::detect_encoding(&probe);
+        detected_enc
+    } else {
+        crate::index::parse_encoding(&encoding).ok_or_else(|| format!("unknown encoding: {encoding}"))?
+    };
     open_file.index.set_encoding(enc);
     let row_count = open_file.index.row_count();
     let format = open_file.index.format_label().to_string();
@@ -495,7 +505,7 @@ pub fn take_pending_open(state: State<PendingOpen>) -> Option<String> {
 
 pub fn is_csv_or_tsv(path: &str) -> bool {
     let lower = path.to_lowercase();
-    lower.ends_with(".csv") || lower.ends_with(".tsv")
+    lower.ends_with(".csv") || lower.ends_with(".tsv") || lower.ends_with(".tab")
 }
 
 #[cfg(test)]
@@ -635,6 +645,31 @@ mod tests {
             assert_eq!(row[0], format!("r{r}c0"), "row {r} col 0 mismatch");
             assert_eq!(row[26], format!("r{r}c26"), "row {r} col 26 mismatch");
         }
+
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn test_set_encoding_explicit_and_auto() {
+        let path = write_temp("set_enc", "col1,col2\nval1,val2\n");
+        let index = CsvIndex::build(&path).unwrap();
+        let mut registry = TabRegistry::new();
+        let tab_id = registry.next_id;
+        registry.next_id += 1;
+        registry.files.insert(tab_id, OpenFile {
+            path: path.clone(),
+            index,
+            overlay: Overlay::new(2, 2),
+            view: None,
+            sort_col: None,
+            filter: None,
+        });
+        let state = Mutex::new(registry);
+
+        // Switch to shift_jis
+        let open_file = state.lock().unwrap().files.get_mut(&tab_id).unwrap().index.set_encoding(encoding_rs::SHIFT_JIS);
+        let _ = open_file;
+        assert_eq!(state.lock().unwrap().files.get(&tab_id).unwrap().index.encoding_label(), "Shift-JIS");
 
         std::fs::remove_file(&path).ok();
     }

@@ -18,6 +18,10 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
         ..Default::default()
     };
 
+    let open_file_item = tauri::menu::MenuItemBuilder::with_id("open-file-dialog", "Open…")
+        .accelerator("CmdOrCtrl+O")
+        .build(app)?;
+
     let save_file_item = tauri::menu::MenuItemBuilder::with_id("save-file", "Save")
         .accelerator("CmdOrCtrl+S")
         .build(app)?;
@@ -59,6 +63,7 @@ fn create_app_menu<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> tauri::Resul
         "File",
         true,
         &[
+            &open_file_item,
             &save_file_item,
             &tauri::menu::PredefinedMenuItem::separator(app)?,
             &close_tab_item,
@@ -148,7 +153,9 @@ pub fn run() {
     let builder = builder
         .menu(|app| create_app_menu(app))
         .on_menu_event(|app, event| {
-            if event.id() == "save-file" {
+            if event.id() == "open-file-dialog" {
+                let _ = app.emit("open-file-dialog", ());
+            } else if event.id() == "save-file" {
                 let _ = app.emit("save-active-file", ());
             } else if event.id() == "close-tab" {
                 let _ = app.emit("close-active-tab", ());

@@ -208,8 +208,14 @@ impl CsvIndex {
 
         // Sniff BOM / delimiter / line-ending / encoding from a bounded probe of the
         // file's start — never proportional to file size.
+        let is_tsv_ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.eq_ignore_ascii_case("tsv") || e.eq_ignore_ascii_case("tab"))
+            .unwrap_or(false);
+
         let mut has_bom = false;
-        let mut delimiter = b',';
+        let mut delimiter = forced_delimiter.unwrap_or(if is_tsv_ext { b'\t' } else { b',' });
         let mut crlf = false;
         let mut encoding = encoding_rs::UTF_8;
 
@@ -247,8 +253,15 @@ impl CsvIndex {
                     let tab_count = line.iter().filter(|&&b| b == b'\t').count();
                     let semicolon_count = line.iter().filter(|&&b| b == b';').count();
                     let pipe_count = line.iter().filter(|&&b| b == b'|').count();
-                    let counts = [(b',', comma_count), (b'\t', tab_count), (b';', semicolon_count), (b'|', pipe_count)];
-                    delimiter = counts.iter().copied().max_by_key(|&(_, c)| c).map(|(d, _)| d).unwrap_or(b',');
+
+                    if is_tsv_ext && (tab_count > 0 || (comma_count == 0 && semicolon_count == 0 && pipe_count == 0)) {
+                        delimiter = b'\t';
+                    } else if comma_count == 0 && tab_count == 0 && semicolon_count == 0 && pipe_count == 0 {
+                        delimiter = if is_tsv_ext { b'\t' } else { b',' };
+                    } else {
+                        let counts = [(b',', comma_count), (b'\t', tab_count), (b';', semicolon_count), (b'|', pipe_count)];
+                        delimiter = counts.iter().copied().max_by_key(|&(_, c)| c).map(|(d, _)| d).unwrap_or(if is_tsv_ext { b'\t' } else { b',' });
+                    }
                 }
             }
         }
@@ -398,6 +411,14 @@ mod tests {
         std::fs::remove_file(&path).ok();
     }
 
+    fn write_temp_ext(name: &str, content: &str, ext: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!("gigagrid_test_{}_{}.{}", name, std::process::id(), ext));
+        let mut f = File::create(&path).unwrap();
+        f.write_all(content.as_bytes()).unwrap();
+        path
+    }
+
     #[test]
     fn detects_tab_delimited_and_parses_as_tsv() {
         let path = write_temp("detect_tab", "a\tb\tc\n1\t2\t3\n");
@@ -406,6 +427,15 @@ mod tests {
         assert_eq!(idx.delimiter(), b'\t');
         let mut file = File::open(&path).unwrap();
         assert_eq!(idx.read_row(&mut file, 1).unwrap(), vec!["1", "2", "3"]);
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn detects_tsv_by_extension_even_single_column() {
+        let path = write_temp_ext("detect_tsv_ext", "col1\nval1\nval2\n", "tsv");
+        let idx = CsvIndex::build(&path).unwrap();
+        assert_eq!(idx.format_label(), "TSV");
+        assert_eq!(idx.delimiter(), b'\t');
         std::fs::remove_file(&path).ok();
     }
 

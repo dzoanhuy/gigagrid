@@ -71,6 +71,9 @@ function App() {
     const unlistenOpen = listen<string>("open-file", (event) => {
       openFileAsNewTab(event.payload);
     });
+    const unlistenOpenDialog = listen("open-file-dialog", () => {
+      openFile();
+    });
     const unlistenClose = listen("close-active-tab", () => {
       requestCloseActiveTab();
     });
@@ -85,6 +88,7 @@ function App() {
     });
     return () => {
       unlistenOpen.then((f) => f());
+      unlistenOpenDialog.then((f) => f());
       unlistenClose.then((f) => f());
       unlistenSave.then((f) => f());
     };
@@ -109,6 +113,14 @@ function App() {
 
     function onKeyDown(e: KeyboardEvent) {
       const mod = e.metaKey || e.ctrlKey;
+
+      // Open file: Cmd+O / Ctrl+O (works even when no tab is open)
+      if (mod && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "o") {
+        e.preventDefault();
+        openFile();
+        return;
+      }
+
       if (activeTabId === null) return;
 
       // Save active tab: Cmd+S / Ctrl+S
@@ -315,11 +327,33 @@ function App() {
     }
     const path = tab.meta.path;
     const currentEncoding = tab.meta.encoding;
-    await invoke("close_tab", { tabId });
-    gridRefs.current.delete(tabId);
-    tabsRef.current = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
-    setTabs((prev) => prev.filter((t) => t.meta.tab_id !== tabId));
-    await openFileAsNewTab(path, delimiter, currentEncoding);
+    try {
+      await invoke("close_tab", { tabId });
+      gridRefs.current.delete(tabId);
+      const meta = await invoke<FileMeta>("open_file", {
+        path,
+        delimiter,
+        encoding: currentEncoding ?? null,
+      });
+      const newTab: Tab = {
+        meta,
+        error: null,
+        saving: false,
+        savedAt: null,
+        stats: EMPTY_STATS,
+        dirty: false,
+        filterActive: false,
+        sortActive: false,
+      };
+      setTabs((prev) => {
+        const next = prev.map((t) => (t.meta.tab_id === tabId ? newTab : t));
+        tabsRef.current = next;
+        return next;
+      });
+      setActiveTabId(meta.tab_id);
+    } catch (e) {
+      setOpenError(String(e));
+    }
   }
 
   async function reopenWithEncoding(tabId: number, encoding: string) {
@@ -344,6 +378,18 @@ function App() {
     tabsRef.current = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
     setTabs((prev) => prev.filter((t) => t.meta.tab_id !== tabId));
     await openFileAsNewTab(path, delimiter, encoding);
+  }
+
+  async function changeEncoding(tabId: number, encoding: string) {
+    const tab = tabs.find((t) => t.meta.tab_id === tabId);
+    if (!tab) return;
+    try {
+      const meta = await invoke<FileMeta>("set_encoding", { tabId, encoding });
+      updateTab(tabId, { meta });
+      gridRefs.current.get(tabId)?.invalidateCache();
+    } catch (e) {
+      setOpenError(String(e));
+    }
   }
 
   async function changeFormat(tabId: number, format: "CSV" | "TSV") {
@@ -371,12 +417,22 @@ function App() {
   }
 
   async function openFile() {
-    const selected = await open({
-      multiple: false,
-      filters: [{ name: "CSV", extensions: ["csv"] }],
-    });
-    if (!selected || Array.isArray(selected)) return;
-    await openFileAsNewTab(selected);
+    if (tabsRef.current.length >= MAX_TABS) return;
+    try {
+      const selected = await open({
+        multiple: false,
+        filters: [
+          { name: "Delimited Files (CSV, TSV)", extensions: ["csv", "tsv", "tab", "txt"] },
+          { name: "CSV (*.csv)", extensions: ["csv"] },
+          { name: "TSV (*.tsv, *.tab)", extensions: ["tsv", "tab"] },
+          { name: "All Files", extensions: ["*"] },
+        ],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      await openFileAsNewTab(selected);
+    } catch (e) {
+      setOpenError(String(e));
+    }
   }
 
   async function closeTab(tabId: number) {
@@ -529,7 +585,7 @@ function App() {
         )}
         <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
           <div style={{ position: "relative" }}>
-            <button className="icon-btn" title="Open file" onClick={openFile} disabled={tabs.length >= MAX_TABS}>
+            <button className="icon-btn" title="Open file (Cmd/Ctrl+O)" onClick={openFile} disabled={tabs.length >= MAX_TABS}>
               <IconFolder />
             </button>
             <button
@@ -638,6 +694,7 @@ function App() {
                 error={isActive ? (tab.error ?? openError) : tab.error}
                 onReopenWithDelimiter={(d) => reopenWithDelimiter(tab.meta.tab_id, d)}
                 onReopenWithEncoding={(enc) => reopenWithEncoding(tab.meta.tab_id, enc)}
+                onChangeEncoding={(enc) => changeEncoding(tab.meta.tab_id, enc)}
                 onChangeFormat={(fmt) => changeFormat(tab.meta.tab_id, fmt)}
                 onChangeLineEnding={(le) => changeLineEnding(tab.meta.tab_id, le)}
               />
