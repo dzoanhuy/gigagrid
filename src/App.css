@@ -167,6 +167,8 @@ button {
 }
 
 .status-bar-btn {
+  display: inline-flex;
+  align-items: center;
   background: transparent;
   border: 1px solid transparent;
   padding: 1px 5px;

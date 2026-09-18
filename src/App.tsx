@@ -329,31 +329,13 @@ function App() {
     const currentEncoding = tab.meta.encoding;
     try {
       await invoke("close_tab", { tabId });
-      gridRefs.current.delete(tabId);
-      const meta = await invoke<FileMeta>("open_file", {
-        path,
-        delimiter,
-        encoding: currentEncoding ?? null,
-      });
-      const newTab: Tab = {
-        meta,
-        error: null,
-        saving: false,
-        savedAt: null,
-        stats: EMPTY_STATS,
-        dirty: false,
-        filterActive: false,
-        sortActive: false,
-      };
-      setTabs((prev) => {
-        const next = prev.map((t) => (t.meta.tab_id === tabId ? newTab : t));
-        tabsRef.current = next;
-        return next;
-      });
-      setActiveTabId(meta.tab_id);
-    } catch (e) {
-      setOpenError(String(e));
+    } catch {
+      // tab might already be closed or in mock environment
     }
+    gridRefs.current.delete(tabId);
+    tabsRef.current = tabsRef.current.filter((t) => t.meta.tab_id !== tabId);
+    setTabs((prev) => prev.filter((t) => t.meta.tab_id !== tabId));
+    await openFileAsNewTab(path, delimiter, currentEncoding);
   }
 
   async function reopenWithEncoding(tabId: number, encoding: string) {
@@ -385,7 +367,12 @@ function App() {
     if (!tab) return;
     try {
       const meta = await invoke<FileMeta>("set_encoding", { tabId, encoding });
-      updateTab(tabId, { meta });
+      if (meta) {
+        updateTab(tabId, { meta, dirty: true });
+      } else {
+        const displayLabel = encoding === "auto" ? tab.meta.encoding : encoding;
+        updateTab(tabId, { meta: { ...tab.meta, encoding: displayLabel }, dirty: true });
+      }
       gridRefs.current.get(tabId)?.invalidateCache();
     } catch (e) {
       setOpenError(String(e));
@@ -398,7 +385,11 @@ function App() {
     if (tab.meta.format === format) return;
     try {
       const meta = await invoke<FileMeta>("set_delimiter", { tabId, delimiter: format });
-      updateTab(tabId, { meta, dirty: true });
+      if (meta) {
+        updateTab(tabId, { meta, dirty: true });
+      } else {
+        updateTab(tabId, { meta: { ...tab.meta, format }, dirty: true });
+      }
     } catch (e) {
       setOpenError(String(e));
     }
@@ -410,7 +401,11 @@ function App() {
     if (tab.meta.line_ending === lineEnding) return;
     try {
       const meta = await invoke<FileMeta>("set_line_ending", { tabId, lineEnding });
-      updateTab(tabId, { meta, dirty: true });
+      if (meta) {
+        updateTab(tabId, { meta, dirty: true });
+      } else {
+        updateTab(tabId, { meta: { ...tab.meta, line_ending: lineEnding }, dirty: true });
+      }
     } catch (e) {
       setOpenError(String(e));
     }
@@ -507,12 +502,12 @@ function App() {
     <main style={{ display: "flex", flexDirection: "column", height: "100vh" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 8px", borderBottom: "1px solid var(--border)" }}>
         <div className="tab-bar-container">
-          {tabs.map((tab) => {
+          {tabs.map((tab, i) => {
             const isActive = tab.meta.tab_id === activeTabId;
             const fileName = tab.meta.path.split(/[\\/]/).pop();
             return (
               <div
-                key={tab.meta.tab_id}
+                key={tab.meta.tab_id ?? `${tab.meta.path}-${i}`}
                 data-active={isActive}
                 className="tab-item"
                 onClick={() => setActiveTabId(tab.meta.tab_id)}
@@ -585,7 +580,7 @@ function App() {
         )}
         <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
           <div style={{ position: "relative" }}>
-            <button className="icon-btn" title="Open file (Cmd/Ctrl+O)" onClick={openFile} disabled={tabs.length >= MAX_TABS}>
+            <button className="icon-btn" title="Open file" aria-label="Open file (Cmd/Ctrl+O)" onClick={openFile} disabled={tabs.length >= MAX_TABS}>
               <IconFolder />
             </button>
             <button
@@ -658,11 +653,11 @@ function App() {
         </div>
       </div>
       <div style={{ position: "relative", display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
-        {tabs.map((tab) => {
+        {tabs.map((tab, i) => {
           const isActive = tab.meta.tab_id === activeTabId;
           return (
             <div
-              key={tab.meta.tab_id}
+              key={tab.meta.tab_id ?? `${tab.meta.path}-${i}`}
               style={{ display: isActive ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0 }}
             >
               <div style={{ flex: 1, minHeight: 0 }}>

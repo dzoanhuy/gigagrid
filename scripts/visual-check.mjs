@@ -67,7 +67,7 @@ window.__TAURI_INTERNALS__ = {
     }
     function __viewLen__() { return window.__view__ ? window.__view__.length : rows.length; }
     if (cmd === "plugin:dialog|open") return "/mock/test.csv";
-    if (cmd === "plugin:dialog|message") return args?.buttons?.ok || "Yes";
+    if (cmd === "plugin:dialog|message") return args?.buttons?.OkCancelCustom?.[0] || args?.buttons?.ok || "Yes";
     if (cmd === "open_file") {
       window.__lastOpenDelimiter__ = args.delimiter ?? null;
       return { path: "/mock/test.csv", row_count: __viewLen__(), format: args.delimiter === "\\t" ? "TSV" : "CSV", encoding: "UTF-8", line_ending: "LF" };

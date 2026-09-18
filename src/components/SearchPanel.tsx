@@ -207,7 +207,8 @@ export const SearchPanel = forwardRef<SearchPanelHandle, SearchPanelProps>(funct
         <button
           className="icon-btn"
           style={{ width: 22, height: 22 }}
-          title={showReplace ? "Hide Replace" : "Show Replace"}
+          title="Toggle replace"
+          aria-label={showReplace ? "Hide Replace" : "Show Replace"}
           onClick={() => setShowReplace((v) => !v)}
         >
           {showReplace ? <IconChevronDown /> : <IconChevronRight />}

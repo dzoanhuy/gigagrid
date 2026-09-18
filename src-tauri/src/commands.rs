@@ -210,7 +210,7 @@ pub fn save_file(dst: Option<String>, tab_id: TabId, state: State<AppState>) -> 
 
     if is_in_place {
         let col_count = open_file.overlay.col_count();
-        let delimiter = open_file.index.delimiter();
+        let delimiter = open_file.index.save_delimiter();
         let encoding = open_file.index.encoding();
         let new_index = CsvIndex::build_with_options(&open_file.path, Some(delimiter), Some(encoding))
             .map_err(|e| e.to_string())?;

@@ -100,19 +100,29 @@ export function StatusBar({
 
         {/* Format / Delimiter anchor */}
         <span style={{ position: "relative" }} className="status-popover-anchor">
-          <button
-            type="button"
+          <span
+            role="button"
+            tabIndex={0}
             className="status-bar-btn"
+            style={{ cursor: "pointer" }}
             data-active={showDelim}
             onClick={() => {
               setShowDelim((v) => !v);
               setShowEnc(false);
               setShowLineEnding(false);
             }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setShowDelim((v) => !v);
+                setShowEnc(false);
+                setShowLineEnding(false);
+              }
+            }}
             title="Click to switch format (CSV/TSV) or reopen with delimiter"
           >
             {file.format}
-          </button>
+          </span>
           {showDelim && (
             <div
               style={{
@@ -135,8 +145,8 @@ export function StatusBar({
                 Format (Save As)
               </div>
               {[
-                ["CSV (Comma ,)", "CSV"],
-                ["TSV (Tab \\t)", "TSV"],
+                ["CSV", "CSV"],
+                ["TSV", "TSV"],
               ].map(([label, fmt]) => {
                 const isCurrent = file.format === fmt;
                 return (
@@ -171,10 +181,10 @@ export function StatusBar({
                 Reopen with Delimiter
               </div>
               {[
-                ["Comma (,)", ","],
-                ["Tab (\\t)", "\t"],
-                ["Semicolon (;)", ";"],
-                ["Pipe (|)", "|"],
+                ["Comma", ","],
+                ["Tab", "\t"],
+                ["Semicolon", ";"],
+                ["Pipe", "|"],
               ].map(([label, d]) => (
                 <button
                   type="button"
@@ -185,7 +195,7 @@ export function StatusBar({
                     onReopenWithDelimiter?.(d);
                   }}
                 >
-                  <span>{label}</span>
+                  {label}
                 </button>
               ))}
             </div>
@@ -194,19 +204,29 @@ export function StatusBar({
 
         {/* Encoding anchor */}
         <span style={{ position: "relative" }} className="status-popover-anchor">
-          <button
-            type="button"
+          <span
+            role="button"
+            tabIndex={0}
             className="status-bar-btn"
+            style={{ cursor: "pointer" }}
             data-active={showEnc}
             onClick={() => {
               setShowEnc((v) => !v);
               setShowDelim(false);
               setShowLineEnding(false);
             }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setShowEnc((v) => !v);
+                setShowDelim(false);
+                setShowLineEnding(false);
+              }
+            }}
             title="Click to switch encoding"
           >
             {file.encoding}
-          </button>
+          </span>
           {showEnc && (
             <div
               style={{
@@ -269,19 +289,29 @@ export function StatusBar({
 
         {/* Line Ending anchor */}
         <span style={{ position: "relative" }} className="status-popover-anchor">
-          <button
-            type="button"
+          <span
+            role="button"
+            tabIndex={0}
             className="status-bar-btn"
+            style={{ cursor: "pointer" }}
             data-active={showLineEnding}
             onClick={() => {
               setShowLineEnding((v) => !v);
               setShowDelim(false);
               setShowEnc(false);
             }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setShowLineEnding((v) => !v);
+                setShowDelim(false);
+                setShowEnc(false);
+              }
+            }}
             title="Click to switch line ending"
           >
             {file.line_ending}
-          </button>
+          </span>
           {showLineEnding && (
             <div
               style={{
