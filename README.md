@@ -11,6 +11,8 @@ A cross-platform (macOS + Windows) desktop CSV editor built for GB-scale files â
 until you explicitly save. Built with [Tauri](https://tauri.app) (Rust core +
 React/TypeScript frontend).
 
+![GigaGrid Demo](docs/demo.gif)
+
 ## Features
 
 - Open and scroll multi-GB raw CSV files without loading them into RAM
