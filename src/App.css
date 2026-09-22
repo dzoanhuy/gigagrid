@@ -9,6 +9,8 @@
   --border: #ddd;
   --input-bg: #ffffff;
   --header-bg: #e8e8e8;
+  --primary: #396cd8;
+  --primary-hover: #2c57b3;
 
   color: var(--fg);
   background-color: var(--bg);

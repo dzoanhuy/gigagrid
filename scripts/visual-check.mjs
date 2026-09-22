@@ -70,7 +70,7 @@ window.__TAURI_INTERNALS__ = {
     if (cmd === "plugin:dialog|message") return args?.buttons?.OkCancelCustom?.[0] || args?.buttons?.ok || "Yes";
     if (cmd === "open_file") {
       window.__lastOpenDelimiter__ = args.delimiter ?? null;
-      return { path: "/mock/test.csv", row_count: __viewLen__(), format: args.delimiter === "\\t" ? "TSV" : "CSV", encoding: "UTF-8", line_ending: "LF" };
+      return { path: args.path || "/mock/test.csv", row_count: __viewLen__(), format: args.delimiter === "\\t" ? "TSV" : "CSV", encoding: "UTF-8", line_ending: "LF" };
     }
     if (cmd === "get_rows") {
       const start = args.start, count = args.count;
@@ -1184,6 +1184,34 @@ async function main() {
     } else {
       console.log("Check 22 SKIPPED: could not find the clickable format label");
     }
+
+    // --- Check 23: file drag-and-drop overlay and open ---
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("dragover"));
+    });
+    await page.waitForTimeout(100);
+    const overlayVisible = await page.evaluate(() => !!document.querySelector(".file-drop-overlay"));
+    console.log("File drop overlay visible on dragover (expect true):", overlayVisible);
+    await page.screenshot({ path: path.join(OUT_DIR, "file-drop-overlay.png") });
+
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("dragleave"));
+    });
+    await page.waitForTimeout(100);
+    const overlayHidden = await page.evaluate(() => !document.querySelector(".file-drop-overlay"));
+    console.log("File drop overlay hidden on dragleave (expect true):", overlayHidden);
+
+    await page.evaluate(() => {
+      const dt = new DataTransfer();
+      const file = new File(["col1,col2\na,b"], "dropped.csv", { type: "text/csv" });
+      Object.defineProperty(file, "path", { value: "/mock/dropped.csv" });
+      dt.items.add(file);
+      const dropEvent = new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true });
+      window.dispatchEvent(dropEvent);
+    });
+    await page.waitForTimeout(500);
+    const tabsAfterDrop = await page.evaluate(() => Array.from(document.querySelectorAll(".tab-title")).map((el) => el.textContent?.trim()));
+    console.log("Tabs after drop (expect dropped.csv present):", tabsAfterDrop);
 
     await browser.close();
   } finally {

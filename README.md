@@ -16,6 +16,7 @@ React/TypeScript frontend).
 ## Features
 
 - Open and scroll multi-GB raw CSV files without loading them into RAM
+- Drag-and-drop CSV/TSV files directly into the window to open
 - Full-text search (find next/previous) across the whole file
 - Goto a specific row/column
 - Edit cells in place; overflowing content auto-scrolls into view

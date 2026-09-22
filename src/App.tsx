@@ -2,6 +2,7 @@ import "./App.css";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { ask, message, open } from "@tauri-apps/plugin-dialog";
 import { check as checkForUpdate, type Update } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -50,6 +51,7 @@ function App() {
   const [updateBusy, setUpdateBusy] = useState(false);
   const [showRecent, setShowRecent] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
   const gridRefs = useRef<Map<number, GridHandle>>(new Map());
   const searchPanelRef = useRef<SearchPanelHandle>(null);
   const tabsRef = useRef<Tab[]>(tabs);
@@ -65,6 +67,63 @@ function App() {
   }, [settings.theme]);
 
   useEffect(() => {
+    let isMounted = true;
+    let unlistenDragDrop: (() => void) | null = null;
+    try {
+      getCurrentWebview()
+        .onDragDropEvent((event) => {
+          if (!isMounted) return;
+          if (event.payload.type === "enter" || event.payload.type === "over") {
+            setIsDragging(true);
+          } else if (event.payload.type === "leave") {
+            setIsDragging(false);
+          } else if (event.payload.type === "drop") {
+            setIsDragging(false);
+            const paths = event.payload.paths;
+            if (Array.isArray(paths)) {
+              for (const path of paths) {
+                openFileAsNewTab(path);
+              }
+            }
+          }
+        })
+        .then((unlisten) => {
+          if (!isMounted) {
+            unlisten();
+          } else {
+            unlistenDragDrop = unlisten;
+          }
+        })
+        .catch(() => {});
+    } catch {
+      // Non-Tauri fallback
+    }
+
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      setIsDragging(true);
+    };
+    const handleDragLeave = (e: DragEvent) => {
+      e.preventDefault();
+      if (!e.relatedTarget) {
+        setIsDragging(false);
+      }
+    };
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      setIsDragging(false);
+      if (e.dataTransfer?.files && e.dataTransfer.files.length > 0) {
+        for (let i = 0; i < e.dataTransfer.files.length; i++) {
+          const file = e.dataTransfer.files[i];
+          const path = (file as any).path || file.name;
+          if (path) openFileAsNewTab(path);
+        }
+      }
+    };
+    window.addEventListener("dragover", handleDragOver);
+    window.addEventListener("dragleave", handleDragLeave);
+    window.addEventListener("drop", handleDrop);
+
     invoke<string | null>("take_pending_open").then((path) => {
       if (path) openFileAsNewTab(path);
     });
@@ -87,10 +146,15 @@ function App() {
       }
     });
     return () => {
+      isMounted = false;
       unlistenOpen.then((f) => f());
       unlistenOpenDialog.then((f) => f());
       unlistenClose.then((f) => f());
       unlistenSave.then((f) => f());
+      if (unlistenDragDrop) (unlistenDragDrop as () => void)();
+      window.removeEventListener("dragover", handleDragOver);
+      window.removeEventListener("dragleave", handleDragLeave);
+      window.removeEventListener("drop", handleDrop);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -281,6 +345,10 @@ function App() {
       const existing = findExistingTab(tabsRef.current, path);
       if (existing) {
         setActiveTabId(existing.meta.tab_id);
+        return;
+      }
+      if (tabsRef.current.length >= MAX_TABS) {
+        setOpenError(`Maximum of ${MAX_TABS} tabs reached. Close a tab to open another file.`);
         return;
       }
     }
@@ -719,6 +787,46 @@ function App() {
           }}
         >
           {openError}
+        </div>
+      )}
+      {isDragging && (
+        <div
+          className="file-drop-overlay"
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 1000,
+            background: "var(--bg)",
+            opacity: 0.95,
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            justifyContent: "center",
+            pointerEvents: "none",
+          }}
+        >
+          <div
+            style={{
+              border: "2px dashed var(--primary, #396cd8)",
+              borderRadius: 12,
+              padding: "36px 48px",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              gap: 12,
+              background: "rgba(57, 108, 216, 0.05)",
+            }}
+          >
+            <div style={{ transform: "scale(2.2)", marginBottom: 8, color: "var(--primary, #396cd8)" }}>
+              <IconFolder />
+            </div>
+            <div style={{ fontSize: 16, fontWeight: 600, color: "var(--fg)" }}>
+              Drop CSV or TSV files here to open
+            </div>
+            <div style={{ fontSize: 12, opacity: 0.7, color: "var(--fg)" }}>
+              Files will open in separate tabs (up to {MAX_TABS})
+            </div>
+          </div>
         </div>
       )}
     </main>
